@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+env/
+venv/
+*.db
+*.npy
+*.pt
+*.onnx
+data/raw_videos/*
+!data/raw_videos/.gitkeep
+data/calibration/*
+!data/calibration/.gitkeep
+data/training/*
+!data/training/.gitkeep
+models/*/*
+!models/*/.gitkeep
