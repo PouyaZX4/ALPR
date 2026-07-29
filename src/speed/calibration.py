@@ -110,6 +110,6 @@ def run_calibration_gui(video_path: str, output_path: str):
 
 if __name__ == "__main__":
     # Allows running this file directly to calibrate
-    video_input = r"G:\AILPR\data\raw_videos\Cars Moving On Road Stock Footage - Free Download.mp4"
+    video_input = r"G:\AILPR\data\raw_videos\4K_Road_traffic_video_for_object_detection_and_tracking_free_download.mp4"
     save_output = "data/calibration/homography.npy"
     run_calibration_gui(video_input, save_output)
