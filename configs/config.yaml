@@ -7,7 +7,7 @@ paths:
   database: data/violations.db
 
 thresholds:
-  speed_kmh: 60
+  speed_kmh: 40
   vehicle_conf: 0.4
   plate_conf: 0.5
 
