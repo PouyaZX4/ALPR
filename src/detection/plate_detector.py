@@ -34,7 +34,7 @@ class PlateDetector:
         # Load YOLO model
         self.model = YOLO(local_weights_path)
 
-    def detect(self, vehicle_crop) -> Detection | None:
+    def detect(self, vehicle_crop, imgsz: int = 1280) -> Detection | None:
         """
         Takes a cropped vehicle image (numpy array).
         Returns Detection object for the highest-confidence license plate, or None.
@@ -45,6 +45,7 @@ class PlateDetector:
         results = self.model.predict(
             source=vehicle_crop,
             conf=self.conf_threshold,
+            imgsz=imgsz,  # <--- Accepts imgsz parameter!
             device=self.device,
             verbose=False
         )[0]
