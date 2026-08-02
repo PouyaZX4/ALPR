@@ -10,7 +10,6 @@ class ViolationDB:
         self._init_db(schema_path)
 
     def _init_db(self, schema_path: str):
-        """Creates SQLite table if it does not exist."""
         if os.path.exists(schema_path):
             with open(schema_path, 'r') as f:
                 schema = f.read()
@@ -26,7 +25,6 @@ class ViolationDB:
         vehicle_image_path: str = "",
         plate_image_path: str = ""
     ) -> int:
-        """Inserts a speeding violation record into SQLite DB."""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         query = """
             INSERT INTO violations 
@@ -43,10 +41,13 @@ class ViolationDB:
             return cursor.lastrowid
 
     def get_all_violations(self) -> list[dict]:
-        """Queries all recorded speeding violations."""
         query = "SELECT * FROM violations ORDER BY id DESC"
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(query)
             return [dict(row) for row in cursor.fetchall()]
+
+    def get_recent(self, limit: int = 50) -> list[dict]:
+        """Alias for frontend compatibility."""
+        return self.get_all_violations()[:limit]
