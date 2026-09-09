@@ -1,10 +1,13 @@
-ultralytics
+ultralytics>=8.3.0
 opencv-python
 onnxruntime-gpu
 fastapi
-uvicorn
+uvicorn[standard]
 python-multipart
 pyyaml
 numpy
 torch
 torchvision
+hezar
+huggingface_hub
+websockets
