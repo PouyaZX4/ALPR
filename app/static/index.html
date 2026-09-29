@@ -123,9 +123,10 @@
           <h2>All Recorded Violations Database</h2>
           <span class="text-muted" id="tableRecordCount">0 records registered</span>
         </div>
-        <div style="display: flex; gap: 8px;">
+        <div style="display: flex; gap: 8px; align-items: center;">
           <input type="text" id="filterPlateInput" class="filter-input" placeholder="Search plate text...">
           <button class="btn" id="btnRefreshDbTable">Refresh</button>
+          <button class="btn btn-red" id="btnResetDatabase">Reset Database</button>
         </div>
       </div>
 
@@ -263,7 +264,7 @@
             </div>
             <div class="inspect-metric">
               <span class="meta-lbl">OCR ACCURACY</span>
-              <span class="meta-val" id="inspectAccuracy">0%</span>
+              <span class="meta-val text-green" id="inspectAccuracy">0%</span>
             </div>
           </div>
 

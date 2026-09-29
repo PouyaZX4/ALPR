@@ -16,7 +16,7 @@
     // Calibration State
     calibImg: new Image(),
     calibPoints: [],       // [{x, y}] in natural image coordinates
-    customGateLine: [],    // [{x, y}] 2 points for custom trigger shot line
+    customGateLine: [],    // [{x, y}] 2 points for custom trigger line
     gateOption: 'default', // 'default' (P4-P3) or 'custom' (G1-G2)
     dragTarget: null,      // { type: 'road'|'gate', index: number }
     cachedViolations: new Map()
@@ -35,32 +35,45 @@
   }
 
   const dom = {
+    // Header & Tabs
     wsStatus: document.getElementById('wsStatus'),
     navTabs: document.querySelectorAll('.nav-tab'),
     tabViolationBadge: document.getElementById('tabViolationBadge'),
+
+    // Stats Banner
     statTotalViolations: document.getElementById('statTotalViolations'),
     statMaxSpeed: document.getElementById('statMaxSpeed'),
     statAvgSpeed: document.getElementById('statAvgSpeed'),
     inputSpeedLimit: document.getElementById('inputSpeedLimit'),
     btnSetLimit: document.getElementById('btnSetLimit'),
+
+    // Upload & Controls
     dropZone: document.getElementById('dropZone'),
     videoFileInput: document.getElementById('videoFileInput'),
     uploadProgressContainer: document.getElementById('uploadProgressContainer'),
     uploadProgressBar: document.getElementById('uploadProgressBar'),
     currentAngleBadge: document.getElementById('currentAngleBadge'),
     anglePills: document.querySelectorAll('.angle-btn'),
+
+    // Video Viewport
     liveStreamFeed: document.getElementById('liveStreamFeed'),
     streamOverlayPlaceholder: document.getElementById('streamOverlayPlaceholder'),
     videoMetaText: document.getElementById('videoMetaText'),
     btnStartStream: document.getElementById('btnStartStream'),
     btnStopStream: document.getElementById('btnStopStream'),
+
+    // Live Feed (Right Pane)
     violationsList: document.getElementById('violationsList'),
     emptyViolationsState: document.getElementById('emptyViolationsState'),
     violationCountBadge: document.getElementById('violationCountBadge'),
+
+    // Full Violations Table (Tab 2)
     dbTableBody: document.getElementById('dbTableBody'),
     filterPlateInput: document.getElementById('filterPlateInput'),
     btnRefreshDbTable: document.getElementById('btnRefreshDbTable'),
+    btnResetDatabase: document.getElementById('btnResetDatabase'),
     tableRecordCount: document.getElementById('tableRecordCount'),
+
     // Studio Calibration
     btnOpenCalibration: document.getElementById('btnOpenCalibration'),
     calibrationModal: document.getElementById('calibrationModal'),
@@ -75,6 +88,7 @@
     radioDefaultGate: document.getElementById('radioDefaultGate'),
     radioCustomGate: document.getElementById('radioCustomGate'),
     calibStatusGuide: document.getElementById('calibStatusGuide'),
+
     // Inspection Modal
     inspectModal: document.getElementById('inspectModal'),
     btnCloseInspect: document.getElementById('btnCloseInspect'),
@@ -103,7 +117,7 @@
   });
 
   // ==========================================================================
-  // Navigation Tabs
+  // Navigation Tabs & Table Actions
   // ==========================================================================
   function initTabs() {
     dom.navTabs.forEach(tab => {
@@ -131,6 +145,25 @@
       dom.btnRefreshDbTable.addEventListener('click', populateFullDatabaseTable);
     }
 
+    if (dom.btnResetDatabase) {
+      dom.btnResetDatabase.addEventListener('click', async () => {
+        const confirmed = confirm("Are you sure you want to permanently delete all recorded violations and evidence images?");
+        if (!confirmed) return;
+
+        try {
+          const res = await fetch('/api/violations/reset', { method: 'POST' });
+          if (res.ok) {
+            clearAllViolationsUI();
+            fetchStats();
+            alert("Database and evidence images successfully cleared.");
+          }
+        } catch (err) {
+          console.error('Error resetting database:', err);
+          alert("Failed to reset database.");
+        }
+      });
+    }
+
     if (dom.filterPlateInput) {
       dom.filterPlateInput.addEventListener('input', (e) => {
         const query = e.target.value.toLowerCase();
@@ -140,6 +173,17 @@
         });
       });
     }
+  }
+
+  function clearAllViolationsUI() {
+    dom.violationsList.innerHTML = '<div class="empty-state" id="emptyViolationsState">No infractions detected</div>';
+    if (dom.dbTableBody) {
+      dom.dbTableBody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 30px;">No violation records found in database.</td></tr>';
+    }
+    if (dom.violationCountBadge) dom.violationCountBadge.textContent = '0';
+    if (dom.tabViolationBadge) dom.tabViolationBadge.textContent = '0';
+    if (dom.tableRecordCount) dom.tableRecordCount.textContent = '0 records registered';
+    state.cachedViolations.clear();
   }
 
   // ==========================================================================
@@ -199,6 +243,9 @@
         const payload = JSON.parse(event.data);
         if (payload.type === 'NEW_VIOLATION') {
           handleIncomingViolation(payload.data);
+          fetchStats();
+        } else if (payload.type === 'DATABASE_RESET') {
+          clearAllViolationsUI();
           fetchStats();
         }
       } catch (err) {
@@ -337,7 +384,7 @@
   }
 
   // ==========================================================================
-  // Clean License Plate Formatter: ۵۷ - ۴۲۵ ص - ۶۷ IR (No Cartoon Styling)
+  // License Plate Formatter: ۵۷ - ۴۲۵ ص - ۶۷ IR (Clean, Minimalist)
   // ==========================================================================
   function parseIranianPlate(rawText) {
     if (!rawText || rawText === 'UNKNOWN') {
@@ -384,7 +431,6 @@
       return `<div class="clean-plate-badge single-text">${toPersianDigits(rawText)}</div>`;
     }
 
-    // Clean, crisp presentation: [ ۵۷ ] - [ ۴۲۵ ص ] - [ ۶۷ IR ]
     return `
       <div class="clean-plate-badge" title="${p.raw}" dir="ltr">
         <span class="plate-seg plate-seg-num">${toPersianDigits(p.part1)}</span>
@@ -582,7 +628,6 @@
     const canvas = dom.calibrationCanvas;
     const hitRadius = Math.max(30, Math.round(canvas.width * 0.035));
 
-    // Check custom gate line first if active
     if (state.gateOption === 'custom') {
       for (let i = 0; i < state.customGateLine.length; i++) {
         const p = state.customGateLine[i];
@@ -592,7 +637,6 @@
       }
     }
 
-    // Check road points
     for (let i = 0; i < state.calibPoints.length; i++) {
       const p = state.calibPoints[i];
       if (Math.hypot(p.x - pos.x, p.y - pos.y) <= hitRadius) {
@@ -620,7 +664,6 @@
       if (e.target === calibrationModal) calibrationModal.style.display = 'none';
     });
 
-    // 2 Explicit Gate Mode Options
     dom.optCardDefault.addEventListener('click', () => {
       state.gateOption = 'default';
       dom.radioDefaultGate.checked = true;
@@ -660,7 +703,6 @@
           [state.customGateLine[1].x, state.customGateLine[1].y]
         ];
       } else {
-        // Option 1: Default between P4 and P3
         gate = [
           [state.calibPoints[3].x, state.calibPoints[3].y],
           [state.calibPoints[2].x, state.calibPoints[2].y]
@@ -691,7 +733,6 @@
       }
     });
 
-    // Mouse Interactions (Click + Drag & Drop)
     calibrationCanvas.addEventListener('mousedown', (e) => {
       const pos = getAccurateMousePos(e);
       const nearby = findNearbyPoint(pos);
@@ -702,7 +743,6 @@
         return;
       }
 
-      // If clicking on empty space, place new points
       if (state.gateOption === 'default' || state.calibPoints.length < 4) {
         if (state.calibPoints.length < 4) {
           state.calibPoints.push(pos);

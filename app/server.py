@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import sqlite3
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
@@ -506,6 +507,53 @@ async def update_threshold(payload: dict = Body(...)):
     return {"status": "success", "speed_kmh": float(speed_kmh)}
 
 
+
+
+
+@app.post("/api/violations/reset")
+async def reset_violations_data():
+    config = get_config()
+    db_path = config.get("paths", {}).get("database", os.path.join(DATA_DIR, "violations.db"))
+
+    # 1. Clear database table and reset ID sequence
+    if os.path.exists(db_path):
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM violations")
+            cursor.execute("DELETE FROM sqlite_sequence WHERE name='violations'")
+            conn.commit()
+            cursor.execute("VACUUM")
+            conn.close()
+        except Exception as e:
+            print(f"[ERROR] Failed to clear DB: {e}")
+
+    # 2. Delete all cropped evidence images from data/violations
+    viol_dir = os.path.join(DATA_DIR, "violations")
+    if os.path.exists(viol_dir):
+        for filename in os.listdir(viol_dir):
+            file_path = os.path.join(viol_dir, filename)
+            if os.path.isfile(file_path) and not filename.startswith('.'):
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
+
+    # 3. Reset pipeline in-memory tracking sets
+    if stream_state.pipeline is not None:
+        stream_state.pipeline.confirmed_violations.clear()
+        stream_state.pipeline.candidates.clear()
+        stream_state.pipeline.recent_plates.clear()
+
+    # 4. Broadcast instant reset to all connected browsers
+    await manager.broadcast({"type": "DATABASE_RESET"})
+
+    print("🗑️ [RESET] All violations, images, and track caches cleared.")
+    return {"status": "success", "message": "Database and violation crops successfully cleared."}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)
+
+
