@@ -38,7 +38,7 @@ class OnnxSpeedALPRPipeline:
         self.calib_points: Optional[List[List[float]]] = None
         self.custom_gate_line: Optional[List[List[float]]] = None
 
-        # Load calibration points if stored on disk
+        # Load calibration points from disk if available
         pts_path = config.get('paths', {}).get('calibration_points', "data/calibration/calibration_points.json")
         if os.path.exists(pts_path):
             try:
@@ -83,7 +83,7 @@ class OnnxSpeedALPRPipeline:
         db_path = config.get('paths', {}).get('database', 'data/violations.db')
         self.db = ViolationDB(db_path=db_path)
 
-        # Violation Deduplication State
+        # Violation Deduplication & Candidate State
         self.confirmed_violations = set()          # Set of confirmed track IDs
         self.candidates: Dict[int, Dict[str, Any]] = {}
         self.recent_plates: Dict[str, int] = {}    # {plate_str: frame_idx}
@@ -140,27 +140,36 @@ class OnnxSpeedALPRPipeline:
         else:
             tracks = self.tracker.predict_only()
 
-        # 2. Velocity Estimation
+        # 2. Compensate Bumper Parallax on Ground Points BEFORE Speed Estimation
+        for trk in tracks:
+            x1, y1, x2, y2 = map(int, trk.bbox)
+            box_h = y2 - y1
+            # Lift ground_point off the protruding bumper as it nears the lens
+            parallax_lift = int(box_h * 0.12) if box_h > (h_frame * 0.18) else 0
+            trk.ground_point = (float((x1 + x2) / 2.0), float(y2 - parallax_lift))
+
+        # 3. Velocity Estimation
         speed_records = self.speed_estimator.update(tracks, frame_idx)
         speed_map = {rec.track_id: rec.speed_kmh for rec in speed_records}
         time_str_map = {rec.track_id: rec.video_time_str for rec in speed_records}
         active_track_ids = {trk.track_id for trk in tracks}
 
-        # 3. Dynamic Enforcement Gate & Candidate Sampling
+        # 4. Dynamic Enforcement Gate & Speed Locking
         for trk in tracks:
             tid = trk.track_id
-            speed = speed_map.get(tid, 0.0)
-            x1, y1, x2, y2 = map(int, trk.bbox)
-            ground_x = float(trk.ground_point[0])
-            ground_y = int(trk.ground_point[1])
-
+            raw_speed = speed_map.get(tid, 0.0)
+            ground_x, ground_y = trk.ground_point
             target_line_y = self.get_capture_y_at_x(ground_x, w_frame, h_frame)
 
+            # Near-gate distance check: within 12% of the gate line
+            is_near_gate = abs(ground_y - target_line_y) <= (h_frame * 0.12)
+
             # Candidate registration
-            if speed > self.speed_threshold and tid not in self.confirmed_violations:
+            if raw_speed > self.speed_threshold and tid not in self.confirmed_violations:
                 if tid not in self.candidates:
                     self.candidates[tid] = {
-                        "max_speed": speed,
+                        "stable_speeds": [raw_speed],
+                        "final_speed": raw_speed,
                         "best_score": -1.0,
                         "best_veh_crop": None,
                         "best_plate_crop": None,
@@ -169,25 +178,27 @@ class OnnxSpeedALPRPipeline:
                         "in_gate_frames": 0,
                     }
                 else:
-                    self.candidates[tid]["max_speed"] = max(self.candidates[tid]["max_speed"], speed)
+                    cand = self.candidates[tid]
+                    # Only collect speed samples in the stable upstream zone (ignore near-gate distortion)
+                    if not is_near_gate and raw_speed > (self.speed_threshold * 0.8):
+                        cand["stable_speeds"].append(raw_speed)
+                        # Clean median speed
+                        sorted_s = sorted(cand["stable_speeds"])
+                        cand["final_speed"] = sorted_s[len(sorted_s) // 2]
 
-            # Sampling highest-quality plate crop inside gate
+            # Sample best license plate crop while inside gate
             if tid in self.candidates:
                 cand = self.candidates[tid]
                 is_in_gate = (target_line_y - gate_margin) <= ground_y <= (target_line_y + gate_margin)
 
                 if is_in_gate:
                     cand["in_gate_frames"] += 1
+                    x1, y1, x2, y2 = map(int, trk.bbox)
+                    bw, bh = x2 - x1, y2 - y1
+                    pad_vw, pad_vh = int(bw * 0.10), int(bh * 0.12)
 
-                    bw = x2 - x1
-                    bh = y2 - y1
-                    pad_vw = int(bw * 0.10)
-                    pad_vh = int(bh * 0.12)
-
-                    cx1 = max(0, x1 - pad_vw)
-                    cy1 = max(0, y1 - pad_vh)
-                    cx2 = min(w_frame, x2 + pad_vw)
-                    cy2 = min(h_frame, y2 + pad_vh)
+                    cx1, cy1 = max(0, x1 - pad_vw), max(0, y1 - pad_vh)
+                    cx2, cy2 = min(w_frame, x2 + pad_vw), min(h_frame, y2 + pad_vh)
 
                     if cx2 > cx1 and cy2 > cy1:
                         veh_crop = frame[cy1:cy2, cx1:cx2].copy()
@@ -199,19 +210,16 @@ class OnnxSpeedALPRPipeline:
                             px1, py1, px2, py2 = map(int, plate_det.bbox)
                             pw, ph = px2 - px1, py2 - py1
 
-                            pad_x = int(pw * 0.15)
-                            pad_y = int(ph * 0.18)
-                            c_px1 = max(0, px1 - pad_x)
-                            c_py1 = max(0, py1 - pad_y)
-                            c_px2 = min(vw, px2 + pad_x)
-                            c_py2 = min(vh, py2 + pad_y)
+                            c_px1 = max(0, px1 - int(pw * 0.15))
+                            c_py1 = max(0, py1 - int(ph * 0.18))
+                            c_px2 = min(vw, px2 + int(pw * 0.15))
+                            c_py2 = min(vh, py2 + int(ph * 0.18))
 
                             plate_crop = veh_crop[c_py1:c_py2, c_px1:c_px2].copy()
                             if plate_crop.size > 0:
                                 plate_crop_enhanced = enhance_plate_contrast(plate_crop)
                                 gray_plate = cv2.cvtColor(plate_crop_enhanced, cv2.COLOR_BGR2GRAY)
                                 sharpness = compute_sharpness(gray_plate)
-
                                 score = ((pw * ph) * 2.0) + (sharpness * 1.5) + (plate_det.confidence * 400)
 
                                 if score > cand["best_score"]:
@@ -221,16 +229,15 @@ class OnnxSpeedALPRPipeline:
                                     cand["frame_idx"] = frame_idx
                                     cand["video_time"] = time_str_map.get(tid, cand["video_time"])
 
-        # 4. Trigger OCR when crossing the gate or exiting (Single Execution Block)
+        # 5. Trigger OCR & Confirm Violation
         for tid in list(self.candidates.keys()):
             cand = self.candidates[tid]
             current_track = next((t for t in tracks if t.track_id == tid), None)
 
             if current_track is not None:
-                curr_ground_x = float(current_track.ground_point[0])
-                curr_ground_y = int(current_track.ground_point[1])
-                target_line_y = self.get_capture_y_at_x(curr_ground_x, w_frame, h_frame)
-                crossed_line = (curr_ground_y >= target_line_y)
+                curr_gx, curr_gy = current_track.ground_point
+                target_line_y = self.get_capture_y_at_x(curr_gx, w_frame, h_frame)
+                crossed_line = (curr_gy >= target_line_y)
             else:
                 crossed_line = True
 
@@ -242,7 +249,6 @@ class OnnxSpeedALPRPipeline:
                 final_display_plate = ocr_result.formatted_text
                 normalized_plate = final_display_plate.strip().replace(" ", "")
 
-                # Check duplicate plate within temporal cooldown
                 is_duplicate = False
                 if normalized_plate in self.recent_plates:
                     if (frame_idx - self.recent_plates[normalized_plate]) < self.plate_cooldown_frames:
@@ -257,10 +263,13 @@ class OnnxSpeedALPRPipeline:
                 cv2.imwrite(veh_crop_path, cand["best_veh_crop"])
                 cv2.imwrite(plate_crop_path, cand["best_plate_crop"])
 
+                # Use the clean, locked upstream speed
+                final_speed = cand["final_speed"]
+
                 if not is_duplicate and normalized_plate != "UNKNOWN":
                     row_id = self.db.insert_violation(
                         track_id=tid,
-                        speed_kmh=cand["max_speed"],
+                        speed_kmh=final_speed,
                         plate_text=final_display_plate,
                         ocr_confidence=float(ocr_result.confidence),
                         video_time=cand["video_time"],
@@ -274,7 +283,7 @@ class OnnxSpeedALPRPipeline:
                     violation_rec = ViolationRecord(
                         id=row_id,
                         track_id=tid,
-                        speed_kmh=cand["max_speed"],
+                        speed_kmh=final_speed,
                         speed_limit=self.speed_threshold,
                         plate_text=final_display_plate,
                         ocr_confidence=float(ocr_result.confidence),
@@ -284,7 +293,7 @@ class OnnxSpeedALPRPipeline:
                         plate_image_path=plate_crop_path.replace("\\", "/")
                     )
                     new_violations.append(violation_rec)
-                    print(f"🚨 [VIOLATION LOGGED] #{row_id} | Track: {tid} | Speed: {cand['max_speed']:.1f} km/h | Plate: {final_display_plate}")
+                    print(f"🚨 [VIOLATION LOGGED] #{row_id} | Track: {tid} | Speed: {final_speed:.1f} km/h | Plate: {final_display_plate}")
                 else:
                     self.confirmed_violations.add(tid)
 

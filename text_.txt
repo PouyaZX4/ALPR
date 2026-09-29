@@ -1,0 +1,8 @@
+
+before i do the merging
+i want a btn
+a btn that would reset the database
+and also clear the images of the violation foldr to prevent overflowwing(i want it in the webfron 
+
+and also one more thing...
+if the user wanted to add a new video on top of the previous one they should be able to do that with out deleting the previous violations and data

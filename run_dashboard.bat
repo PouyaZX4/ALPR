@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 title Persian Speed ALPR Dashboard
 
 echo ================================================================
-echo           PERSIAN SPEED-TRIGGERED ALPR SYSTEM
+echo           PERSIAN SPEED-TRIGGERED ALPR SYSTEM [GPU]
 echo ================================================================
 
 :: 1. Check Python installation
@@ -28,27 +28,15 @@ if not exist ".venv\Scripts\activate.bat" (
 :: 3. Activate Virtual Environment
 call .venv\Scripts\activate.bat
 
-:: 4. Verify GPU-enabled ONNX Runtime is installed
-python -c "import onnxruntime as ort; assert any(p in ort.get_available_providers() for p in ('CUDAExecutionProvider', 'DmlExecutionProvider'))" >nul 2>nul
+:: 4. Verify all critical packages + DirectML GPU are present
+python -c "import uvicorn, fastapi, cv2, yaml, onnxruntime as ort; assert 'DmlExecutionProvider' in ort.get_available_providers()" >nul 2>nul
 if %ERRORLEVEL% neq 0 (
-    echo [HARDWARE] Configuring CUDA and DirectML GPU drivers...
+    echo [INFO] Missing dependencies detected. Installing requirements...
     python -m pip install --upgrade pip
-    
-    :: Check if NVIDIA hardware exists
-    where nvidia-smi >nul 2>nul
-    if %ERRORLEVEL% equ 0 (
-        echo [HARDWARE] NVIDIA card detected. Installing onnxruntime-gpu...
-        python -m pip install onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/ 2>nul
-    )
-
-    :: Install DirectML as secondary fallback
-    python -m pip install onnxruntime-directml 2>nul
     python -m pip install -r requirements.txt
-    
-    echo GPU_CONFIGURED > ".venv\.gpu_ready"
-    echo [SUCCESS] GPU packages installed successfully!
+    echo [SUCCESS] Environment successfully configured!
 ) else (
-    echo [INFO] Hardware-accelerated environment verified.
+    echo [INFO] All dependencies verified - DirectML GPU ready.
 )
 
 :: 5. Create required directories
@@ -59,12 +47,12 @@ if not exist "data\calibration" mkdir "data\calibration"
 :: 6. Launch Browser and Server
 echo.
 echo ================================================================
-echo [STARTING] Launching SpeedALPR Dashboard...
+echo [STARTING] Loading models into GPU and launching dashboard...
 echo [SERVER] http://127.0.0.1:8000
 echo ================================================================
 echo.
 
-start "" cmd /c "timeout /t 2 /nobreak >nul & start http://127.0.0.1:8000"
+start "" cmd /c "timeout /t 3 /nobreak >nul & start http://127.0.0.1:8000"
 python -m uvicorn app.server:app --host 127.0.0.1 --port 8000
 
 pause

@@ -246,39 +246,60 @@ def _process_stream_frame(pipeline, frame, frame_idx, speed_limit, total_frames,
     tracks, speed_records, new_violations = pipeline.process_frame(frame, frame_idx)
     speed_map = {rec.track_id: rec.speed_kmh for rec in speed_records}
 
+    # Proportional font scaling based on resolution
+    base_dim = min(w_f, h_f)
+    font_scale = max(0.65, base_dim / 1000.0 * 0.75)
+    thickness = max(2, int(round(font_scale * 2.2)))
+
     # Draw Current Trigger Gate Line
     line_p1, line_p2 = pipeline.get_capture_line_endpoints(w_f, h_f)
-    cv2.line(frame, line_p1, line_p2, (255, 0, 127), 3, cv2.LINE_AA)
-    cv2.putText(frame, "RADAR GATE", (max(10, line_p1[0]), max(25, line_p1[1] - 8)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 0, 127), 2, cv2.LINE_AA)
+    cv2.line(frame, line_p1, line_p2, (255, 0, 127), max(2, int(thickness * 1.5)), cv2.LINE_AA)
+    cv2.putText(frame, "RADAR GATE", (max(10, line_p1[0]), max(30, line_p1[1] - 10)),
+                cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 0, 127), thickness, cv2.LINE_AA)
 
+    # Draw Vehicle Tracks & Crisp Speed Badges
     for trk in tracks:
         x1, y1, x2, y2 = map(int, trk.bbox)
         tid = trk.track_id
         speed = speed_map.get(tid, 0.0)
 
         is_speeding = speed > speed_limit
-        color = (0, 0, 255) if is_speeding else (0, 230, 118)
+        accent_color = (0, 0, 255) if is_speeding else (0, 230, 118)  # Red / Green
 
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2, cv2.LINE_AA)
-        cv2.circle(frame, (int(trk.ground_point[0]), int(trk.ground_point[1])), 4, (0, 255, 255), -1, cv2.LINE_AA)
+        # Vehicle bounding box
+        cv2.rectangle(frame, (x1, y1), (x2, y2), accent_color, max(2, thickness), cv2.LINE_AA)
+        cv2.circle(frame, (int(trk.ground_point[0]), int(trk.ground_point[1])), max(4, thickness * 2), (0, 255, 255), -1, cv2.LINE_AA)
 
+        # Clear, high-contrast badge text
         label = f"ID:{tid} | {speed:.1f} km/h"
-        (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
-        cv2.rectangle(frame, (x1, max(0, y1 - 22)), (x1 + text_w, max(22, y1)), color, -1)
-        cv2.putText(frame, label, (x1, max(16, y1 - 6)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2, cv2.LINE_AA)
+        (text_w, text_h), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
 
+        badge_h = text_h + 14
+        badge_w = text_w + 16
+        bx1 = max(0, x1)
+        by1 = max(badge_h + 4, y1)
+
+        # 1. Solid black badge background with colored border
+        cv2.rectangle(frame, (bx1, by1 - badge_h), (bx1 + badge_w, by1), (0, 0, 0), -1)
+        cv2.rectangle(frame, (bx1, by1 - badge_h), (bx1 + badge_w, by1), accent_color, 2, cv2.LINE_AA)
+
+        # 2. Crisp, bright white text with anti-aliasing
+        cv2.putText(frame, label, (bx1 + 8, by1 - 7),
+                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+
+    # Header Telemetry Bar
     s = frame_idx / fps
     m = int(s // 60)
     sec = s % 60
     time_str = f"{m:02d}:{sec:05.2f}"
     header_text = f"LIMIT: {speed_limit:.0f} km/h | {time_str} | F:{frame_idx}/{total_frames}"
-    cv2.rectangle(frame, (10, 10), (min(w_f - 10, 480), 38), (0, 0, 0), -1)
-    cv2.putText(frame, header_text, (16, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 229, 255), 2, cv2.LINE_AA)
 
-    # Maintain strictly proportional aspect ratio regardless of portrait / landscape
-    max_dim = 960
+    cv2.rectangle(frame, (10, 10), (min(w_f - 10, int(520 * (font_scale / 0.65))), int(42 * (font_scale / 0.65))), (0, 0, 0), -1)
+    cv2.putText(frame, header_text, (18, int(30 * (font_scale / 0.65))),
+                cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.9, (0, 229, 255), thickness, cv2.LINE_AA)
+
+    # Higher stream resolution (1280px instead of 960px)
+    max_dim = 1280
     if max(w_f, h_f) > max_dim:
         scale = max_dim / float(max(w_f, h_f))
         disp_w = int(w_f * scale)
@@ -287,7 +308,8 @@ def _process_stream_frame(pipeline, frame, frame_idx, speed_limit, total_frames,
     else:
         stream_frame = frame
 
-    _, buffer = cv2.imencode('.jpg', stream_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    # High JPEG Quality (92 instead of 80) for sharp text
+    _, buffer = cv2.imencode('.jpg', stream_frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
     return buffer.tobytes(), new_violations
 
 @app.get("/api/stream/video")

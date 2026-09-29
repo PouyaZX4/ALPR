@@ -50,7 +50,7 @@ class SpeedEstimator:
             history = self.track_history[track.track_id]
             history.append((world_x, world_y, frame_idx))
 
-            # 3. Need at least 2 points to compute delta
+            # 3. Need at least 2 apoints to compute delta
             if len(history) >= 2:
                 x_start, y_start, frame_start = history[0]
                 x_end, y_end, frame_end = history[-1]
