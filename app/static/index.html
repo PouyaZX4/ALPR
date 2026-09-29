@@ -13,6 +13,16 @@
     <div class="header-brand">
       <span class="brand-title">RADAR-ALPR <span class="brand-tag">PERSIAN AI</span></span>
     </div>
+
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs">
+      <button class="nav-tab active" data-tab="tabLiveMonitor">Live Monitor</button>
+      <button class="nav-tab" data-tab="tabViolationsDb">
+        All Violations
+        <span class="tab-badge" id="tabViolationBadge">0</span>
+      </button>
+    </nav>
+
     <div class="header-actions">
       <div class="connection-status" id="wsStatus">
         <span class="status-indicator"></span>
@@ -45,15 +55,10 @@
     </div>
   </section>
 
-  <!-- Main View -->
-  <main class="main-layout">
-    
-    <!-- Left: Video Area -->
+  <!-- TAB 1: Live Monitor -->
+  <main class="main-layout tab-content active" id="tabLiveMonitor">
     <section class="left-pane">
-      
-      <!-- Compact Top Controls Bar -->
       <div class="top-controls-bar">
-        <!-- Upload -->
         <label for="videoFileInput" class="upload-btn-box" id="dropZone">
           <input type="file" id="videoFileInput" accept="video/mp4,video/avi,video/mkv,video/mov" hidden>
           <span class="upload-icon">&#128194;</span>
@@ -63,7 +68,6 @@
           </div>
         </label>
 
-        <!-- Rotation Control -->
         <div class="rotation-bar">
           <div class="rotation-meta">
             <span class="ctrl-label">ORIENTATION</span>
@@ -82,7 +86,7 @@
         <div class="upload-progress-fill" id="uploadProgressBar"></div>
       </div>
 
-      <!-- Video Stream Box -->
+      <!-- Video Container -->
       <div class="video-container">
         <div class="video-stage">
           <img id="liveStreamFeed" src="/static/placeholder.png" alt="Stream Preview">
@@ -97,39 +101,174 @@
           </div>
         </div>
       </div>
-
     </section>
 
-    <!-- Right: Violations Log -->
+    <!-- Right: Mini Live Feed -->
     <aside class="right-pane">
       <div class="pane-header">
-        <span class="pane-title">VIOLATIONS LOG</span>
+        <span class="pane-title">LIVE DETECTIONS</span>
         <span class="badge" id="violationCountBadge">0</span>
       </div>
       <div class="violations-feed" id="violationsList">
         <div class="empty-state" id="emptyViolationsState">No infractions detected</div>
       </div>
     </aside>
-
   </main>
 
-  <!-- Calibration Modal -->
+  <!-- TAB 2: Full Violations History Database -->
+  <main class="tab-content" id="tabViolationsDb">
+    <section class="violations-table-page">
+      <div class="table-toolbar">
+        <div>
+          <h2>All Recorded Violations Database</h2>
+          <span class="text-muted" id="tableRecordCount">0 records registered</span>
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <input type="text" id="filterPlateInput" class="filter-input" placeholder="Search plate text...">
+          <button class="btn" id="btnRefreshDbTable">Refresh</button>
+        </div>
+      </div>
+
+      <div class="table-container">
+        <table class="db-table">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Vehicle Snapshot</th>
+              <th>Iranian Plate</th>
+              <th>Plate Crop</th>
+              <th>Recorded Speed</th>
+              <th>Limit</th>
+              <th>Video Timestamp</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="dbTableBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- SPACIOUS CALIBRATION STUDIO MODAL (WITH 2 EXPLICIT OPTIONS) -->
   <div class="modal-backdrop" id="calibrationModal" style="display: none;">
-    <div class="modal-window">
-      <div class="modal-header">
-        <h3>Radar Calibration (Select 4 Points)</h3>
+    <div class="modal-window-studio">
+      <div class="modal-header-studio">
+        <div>
+          <h3>Perspective Radar & Enforcement Gate Studio</h3>
+        </div>
         <button class="btn-close" id="btnCloseCalibration">&times;</button>
       </div>
-      <div class="modal-body">
-        <div class="canvas-wrap">
+
+      <div class="modal-body-studio">
+        <!-- Interactive Stage -->
+        <div class="canvas-stage-wrap">
           <canvas id="calibrationCanvas"></canvas>
         </div>
-        <div class="calib-inputs">
-          <label>Road Width (m): <input type="number" id="calibRoadWidth" value="3.5" step="0.1"></label>
-          <label>Road Length (m): <input type="number" id="calibRoadLength" value="20.0" step="0.5"></label>
-          <div class="modal-actions">
-            <button class="btn" id="btnResetCalibPoints">Reset</button>
-            <button class="btn btn-green" id="btnSaveCalibration">Save Calibration</button>
+
+        <!-- Sidebar Options -->
+        <div class="calib-studio-sidebar">
+          <!-- Trigger Gate Options (The 2 choices) -->
+          <div class="studio-panel">
+            <span class="panel-title">Capture Trigger Gate Option</span>
+
+            <div class="gate-option-card selected" id="optCardDefault">
+              <div class="gate-option-header">
+                <input type="radio" name="gateOptRadio" id="radioDefaultGate" class="gate-radio" checked>
+                <label for="radioDefaultGate" class="gate-option-title">1. Default Gate (Line P4-P3)</label>
+              </div>
+              <p class="gate-option-desc">Automatically triggers snapshot when vehicle crosses bottom of 4-point road box.</p>
+            </div>
+
+            <div class="gate-option-card" id="optCardCustom">
+              <div class="gate-option-header">
+                <input type="radio" name="gateOptRadio" id="radioCustomGate" class="gate-radio">
+                <label for="radioCustomGate" class="gate-option-title">2. Custom Gate Line (Click 2 Pts)</label>
+              </div>
+              <p class="gate-option-desc">Place an independent trigger line anywhere across the road (G1 to G2).</p>
+            </div>
+          </div>
+
+          <!-- Road Dimensions -->
+          <div class="studio-panel">
+            <span class="panel-title">Real-World Road Scale</span>
+            <div class="form-row">
+              <label>Road Width (meters):</label>
+              <input type="number" id="calibRoadWidth" value="3.5" step="0.1">
+            </div>
+            <div class="form-row">
+              <label>Road Length (meters):</label>
+              <input type="number" id="calibRoadLength" value="20.0" step="0.5">
+            </div>
+          </div>
+
+          <!-- Instructions / Status -->
+          <div class="studio-panel">
+            <span class="panel-title">Instructions</span>
+            <p id="calibStatusGuide" style="font-size: 0.72rem; color: var(--text-muted); line-height: 1.4;">
+              Click 4 road corners clockwise (TL, TR, BR, BL). Drag any placed point to adjust.
+            </p>
+          </div>
+
+          <!-- Actions -->
+          <div class="studio-actions">
+            <button class="btn" id="btnResetAllCalib">Reset Points</button>
+            <button class="btn btn-green" id="btnSaveCalibration">Save & Activate</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Vehicle & Violation Inspection Modal -->
+  <div class="modal-backdrop" id="inspectModal" style="display: none;">
+    <div class="inspect-window">
+      <div class="inspect-header">
+        <div>
+          <span class="inspect-tag">INSPECTION REPORT</span>
+          <h3 id="inspectRecordTitle" style="font-size: 1rem; margin-top: 2px;">Infraction #--</h3>
+        </div>
+        <button class="btn-close" id="btnCloseInspect">&times;</button>
+      </div>
+
+      <div class="inspect-body">
+        <div class="inspect-visuals">
+          <div class="inspect-box-large">
+            <span class="ctrl-label" style="margin-bottom: 6px;">VEHICLE OVERVIEW</span>
+            <img id="inspectVehImg" src="/static/placeholder.png" alt="Vehicle Snapshot">
+          </div>
+          <div class="inspect-box-small">
+            <span class="ctrl-label" style="margin-bottom: 4px;">EXTRACTED PLATE CROP</span>
+            <img id="inspectPlateImg" src="/static/placeholder.png" alt="Plate Crop">
+          </div>
+        </div>
+
+        <div class="inspect-telemetry">
+          <div style="background: var(--surface-sub); border: 1px solid var(--border); border-radius: 6px; padding: 12px; display: flex; flex-direction: column; align-items: center; gap: 8px;">
+            <span class="ctrl-label">RECOGNIZED IRANIAN PLATE</span>
+            <div id="inspectPlateBadge"></div>
+          </div>
+
+          <div class="inspect-grid">
+            <div class="inspect-metric">
+              <span class="meta-lbl">RECORDED SPEED</span>
+              <span class="meta-val text-red" id="inspectSpeed">0.0 km/h</span>
+            </div>
+            <div class="inspect-metric">
+              <span class="meta-lbl">SPEED LIMIT</span>
+              <span class="meta-val" id="inspectLimit">60 km/h</span>
+            </div>
+            <div class="inspect-metric">
+              <span class="meta-lbl">OVER LIMIT BY</span>
+              <span class="meta-val text-yellow" id="inspectExcess">+0.0 km/h</span>
+            </div>
+            <div class="inspect-metric">
+              <span class="meta-lbl">OCR ACCURACY</span>
+              <span class="meta-val" id="inspectAccuracy">0%</span>
+            </div>
+          </div>
+
+          <div style="margin-top: auto; display: flex; justify-content: flex-end;">
+            <button class="btn" id="btnCloseInspectBtn">Dismiss</button>
           </div>
         </div>
       </div>

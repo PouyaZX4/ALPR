@@ -29,16 +29,20 @@ if not exist ".venv\Scripts\activate.bat" (
 call .venv\Scripts\activate.bat
 
 :: 4. Verify GPU-enabled ONNX Runtime is installed
-python -c "import onnxruntime as ort; assert any('Dml' in p or 'CUDA' in p for p in ort.get_available_providers())" >nul 2>nul
+python -c "import onnxruntime as ort; assert any(p in ort.get_available_providers() for p in ('CUDAExecutionProvider', 'DmlExecutionProvider'))" >nul 2>nul
 if %ERRORLEVEL% neq 0 (
-    echo [HARDWARE] Configuring GPU execution providers...
+    echo [HARDWARE] Configuring CUDA and DirectML GPU drivers...
     python -m pip install --upgrade pip
-    :: Remove CPU-only package if present
-    python -m pip uninstall -y onnxruntime onnxruntime-gpu onnxruntime-directml >nul 2>nul
     
-    :: Install DirectML (Universal GPU support for Windows)
-    echo [INFO] Installing onnxruntime-directml for hardware acceleration...
-    python -m pip install onnxruntime-directml
+    :: Check if NVIDIA hardware exists
+    where nvidia-smi >nul 2>nul
+    if %ERRORLEVEL% equ 0 (
+        echo [HARDWARE] NVIDIA card detected. Installing onnxruntime-gpu...
+        python -m pip install onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/ 2>nul
+    )
+
+    :: Install DirectML as secondary fallback
+    python -m pip install onnxruntime-directml 2>nul
     python -m pip install -r requirements.txt
     
     echo GPU_CONFIGURED > ".venv\.gpu_ready"
@@ -55,7 +59,7 @@ if not exist "data\calibration" mkdir "data\calibration"
 :: 6. Launch Browser and Server
 echo.
 echo ================================================================
-echo [STARTING] Launching SpeedALPR Dashboard on GPU...
+echo [STARTING] Launching SpeedALPR Dashboard...
 echo [SERVER] http://127.0.0.1:8000
 echo ================================================================
 echo.

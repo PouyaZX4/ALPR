@@ -1,79 +1,56 @@
-from typing import Dict, Any
+import re
 
-PERSIAN_LETTERS = set("ابپتثجدسصطعقلمنوهیژآچشظغفکگ")
-PERSIAN_DIGITS = "۰۱۲۳۴۵۶۷۸۹"
-ENGLISH_DIGITS = "0123456789"
-EN_TO_FA = str.maketrans("".join(ENGLISH_DIGITS), "".join(PERSIAN_DIGITS))
+PERSIAN_TO_ENGLISH = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+ENGLISH_TO_PERSIAN = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
 
+def to_persian_digits(s: str) -> str:
+    return str(s).translate(ENGLISH_TO_PERSIAN)
 
-def normalize_persian_digits(text: str) -> str:
-    return text.translate(EN_TO_FA)
+def to_english_digits(s: str) -> str:
+    return str(s).translate(PERSIAN_TO_ENGLISH)
 
+def format_iranian_plate(raw_text: str) -> dict:
+    if not raw_text or raw_text.strip() == "":
+        return {"formatted": "UNKNOWN", "raw": raw_text, "part1": "", "letter": "", "part2": "", "prov": ""}
 
-def format_iranian_plate(corrected_text: str) -> Dict[str, Any]:
-    """
-    Takes true Left-to-Right plate (e.g. '۵۷ص۴۲۵۶۷')
-    and outputs:
-    Left: 57 | Letter: ص | Mid: 425 | Iran: 67
-    Formatted: [57] [ص] [425] - ایران 67
-    """
-    if not corrected_text:
-        return {
-            "formatted": "UNKNOWN",
-            "badge": "UNKNOWN",
-            "left_2": "",
-            "letter": "",
-            "mid_3": "",
-            "iran_code": "",
-            "is_valid": False
-        }
+    # 1. Clean unicode control marks and spaces
+    cleaned = re.sub(r'[\u200B-\u200F\u202A-\u202E\uFEFF\[\]\(\)\-_]', '', raw_text).strip()
+    ascii_clean = to_english_digits(cleaned)
 
-    cleaned = normalize_persian_digits(corrected_text.strip().replace(" ", "").replace("-", ""))
+    # 2. Extract digits and Persian letter
+    # Standard format: 2 digits (part1) + 1 letter + 3 digits (part2) + 2 digits (province)
+    digits = re.findall(r'\d+', ascii_clean)
+    letters = re.findall(r'[^\d\s\-_]+', ascii_clean)
+    
+    # Remove 'ایران' or 'IR' if captured in letters
+    letters = [l for l in letters if l not in ('ایران', 'IR', 'ir', 'iran')]
+    letter = letters[0] if letters else ""
 
-    # Locate letter
-    letter_match = None
-    for idx, ch in enumerate(cleaned):
-        if ch in PERSIAN_LETTERS:
-            letter_match = (idx, ch)
-            break
+    p1, p2, prov = "", "", ""
 
-    all_digits = [c for c in cleaned if c in PERSIAN_DIGITS]
+    if len(digits) >= 3:
+        p1 = digits[0][:2]
+        p2 = digits[1][:3]
+        prov = digits[2][:2]
+    elif len(digits) == 1 and len(digits[0]) >= 7:
+        d = digits[0]
+        p1, p2, prov = d[:2], d[2:5], d[5:7]
+    elif len(digits) == 2:
+        p1 = digits[0][:2]
+        p2 = digits[1][:3]
+        prov = digits[1][3:5] if len(digits[1]) >= 5 else "--"
 
-    # Standard format: 2 digits + 1 letter + 3 digits + 2 digits (e.g. ۵۷ص۴۲۵۶۷)
-    if letter_match and len(all_digits) >= 7:
-        letter_idx, letter = letter_match
-        digits_before = [c for c in cleaned[:letter_idx] if c in PERSIAN_DIGITS]
-        digits_after = [c for c in cleaned[letter_idx + 1:] if c in PERSIAN_DIGITS]
-
-        if len(digits_before) == 2 and len(digits_after) >= 5:
-            left_2 = "".join(digits_before)
-            mid_3 = "".join(digits_after[:3])
-            iran_code = "".join(digits_after[3:5])
-        else:
-            left_2 = "".join(all_digits[:2])
-            mid_3 = "".join(all_digits[2:5])
-            iran_code = "".join(all_digits[5:7])
-
-        # Unicode Left-to-Right Embedding (\u202A ... \u202C) prevents terminal BiDi flipping
-        formatted_terminal = f"\u202A[{left_2}] [{letter}] [{mid_3}] - ایران {iran_code}\u202C"
-        badge_html = f"{left_2} {letter} {mid_3} | ایران {iran_code}"
-
-        return {
-            "formatted": formatted_terminal,
-            "badge": badge_html,
-            "left_2": left_2,
-            "letter": letter,
-            "mid_3": mid_3,
-            "iran_code": iran_code,
-            "is_valid": True
-        }
+    if p1 and p2 and letter:
+        # EXACT sequence: [ ۵۷ ] - [ ۴۲۵ ص ] - [ ۶۷ IR ]
+        formatted = f"{to_persian_digits(p1)} - {to_persian_digits(p2)} {letter} - {to_persian_digits(prov)} IR"
+    else:
+        formatted = to_persian_digits(ascii_clean)
 
     return {
-        "formatted": cleaned,
-        "badge": cleaned,
-        "left_2": "".join(all_digits[:2]) if len(all_digits) >= 2 else "",
-        "letter": letter_match[1] if letter_match else "",
-        "mid_3": "".join(all_digits[2:]) if len(all_digits) > 2 else "",
-        "iran_code": "",
-        "is_valid": False
+        "formatted": formatted,
+        "raw": raw_text,
+        "part1": p1,
+        "letter": letter,
+        "part2": p2,
+        "prov": prov
     }
