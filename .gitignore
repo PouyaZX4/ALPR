@@ -8,6 +8,7 @@ venv/
 *.pt
 *.onnx
 data/raw_videos/*
+data/violations/*
 !data/raw_videos/.gitkeep
 data/calibration/*
 !data/calibration/.gitkeep
