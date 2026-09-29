@@ -21,7 +21,7 @@
                 </div>
                 <div class="brand-text">
                     <h2>SpeedALPR</h2>
-                    <span>Vision Intelligence</span>
+                    <span>Traffic Vision AI</span>
                 </div>
             </div>
 
@@ -53,18 +53,18 @@
         <main class="main-content">
             <header class="top-header">
                 <div class="header-title">
-                    <h1>Speed-Triggered ALPR Live Center</h1>
-                    <p>Real-time vehicle detection, perspective speed estimation, and Persian OCR recognition</p>
+                    <h1>Speed-Triggered ALPR Dashboard</h1>
+                    <p>Vehicle tracking, perspective velocity estimation, and Persian OCR</p>
                 </div>
                 <div class="header-actions">
                     <button class="btn btn-secondary" id="btnRefreshStats">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
-                        Refresh
+                        Refresh Stats
                     </button>
                 </div>
             </header>
 
-            <!-- Top Summary Metrics Grid -->
+            <!-- Metrics Summary Cards -->
             <section class="metrics-grid">
                 <div class="metric-card glass">
                     <div class="metric-icon alert-icon">
@@ -101,14 +101,15 @@
                         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line></svg>
                     </div>
                     <div class="metric-body">
-                        <span class="metric-label">Speed Limit</span>
+                        <span class="metric-label">Enforced Limit</span>
                         <h3 class="metric-value"><span id="valSpeedLimit">60</span> <small>km/h</small></h3>
                     </div>
                 </div>
             </section>
 
-            <!-- TAB 1: LIVE OPERATIONS & ANALYSIS -->
+            <!-- ================= TAB 1: LIVE OPERATIONS ================= -->
             <div class="tab-pane active" id="live-tab">
+                <!-- Video Stream Viewer Panel -->
                 <section class="panel-section glass">
                     <div class="section-header">
                         <div class="section-title-wrap">
@@ -116,15 +117,17 @@
                             <span class="badge" id="streamBadge">Stream Idle</span>
                         </div>
                         <div class="stream-controls">
-                            <!-- Native overlay wrapper to ensure file dialog trigger -->
-                            <div class="upload-btn-wrapper" style="position: relative; display: inline-block;">
-                                <button class="btn btn-secondary" id="btnUploadTrigger" style="pointer-events: none;">
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
-                                    <span id="uploadBtnText">Upload Video</span>
-                                </button>
-                                <input type="file" id="videoFileInput" accept="video/mp4,video/x-matroska,video/*" 
-                                       style="position: absolute; left: 0; top: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; z-index: 10;">
-                            </div>
+                            <!-- Direct File Upload Button -->
+                            <label class="btn btn-secondary upload-label" for="videoFileInput" id="uploadLabel">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                                    <polyline points="17 8 12 3 7 8"></polyline>
+                                    <line x1="12" y1="3" x2="12" y2="15"></line>
+                                </svg>
+                                <span id="uploadBtnText">Upload Video</span>
+                            </label>
+                            <input type="file" id="videoFileInput" accept="video/mp4,video/x-matroska,video/*" style="display: none;">
+
                             <button class="btn btn-primary" id="btnStartStream" disabled>
                                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
                                 Start Live Stream
@@ -136,10 +139,10 @@
                         </div>
                     </div>
 
-                    <!-- Speed Limit Slider Control -->
+                    <!-- Enforced Threshold Slider -->
                     <div class="threshold-control-card">
                         <div class="threshold-header">
-                            <label for="thresholdRange">Enforcement Speed Threshold</label>
+                            <label for="thresholdRange">Speed Violation Threshold</label>
                             <span class="threshold-value-display"><strong id="thresholdVal">60</strong> <small>km/h</small></span>
                         </div>
                         <div class="threshold-slider-wrapper">
@@ -149,51 +152,51 @@
                         </div>
                     </div>
 
-                    <!-- Video Stream Container -->
+                    <!-- Video Streaming Frame Container -->
                     <div class="video-stream-wrapper" id="streamWrapper">
                         <div class="stream-placeholder" id="streamPlaceholder">
                             <div class="upload-icon">
                                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
                             </div>
-                            <h3>No Active Stream</h3>
-                            <p>Upload a video above and click <strong>Start Live Stream</strong> to begin real-time detection</p>
+                            <h3>No Active Video Stream</h3>
+                            <p>Upload a video above, calibrate road points if needed, then click <strong>Start Live Stream</strong></p>
                         </div>
                         <img id="liveStreamImg" class="live-stream-img hidden" alt="Live Processing Stream">
                     </div>
                 </section>
 
-                <!-- Real-Time Violations Feed -->
+                <!-- Dedicated Live Violations Feed (Below Stream) -->
                 <section class="panel-section glass">
                     <div class="section-header">
                         <div class="section-title-wrap">
                             <h2>🚨 Live Speeding Violations Feed</h2>
                             <span class="badge badge-alert">Real-Time Trigger</span>
                         </div>
-                        <span class="card-counter">Showing newest alerts</span>
+                        <span class="card-counter">Only speeding vehicles displayed</span>
                     </div>
 
                     <div class="violations-cards-grid" id="liveViolationsGrid">
                         <div class="no-violations-msg" id="noViolationsMsg">
-                            <p>No speeding violations detected yet. When a vehicle exceeds the speed limit, its dual snapshot (car crop + license plate) and timestamp will appear here in real time.</p>
+                            <p>No speeding violations detected yet. When a vehicle crosses the enforcement threshold, its dual snapshot (car crop + license plate crop), speed, and Persian OCR readout will appear here immediately.</p>
                         </div>
                     </div>
                 </section>
             </div>
 
-            <!-- TAB 2: ROAD CALIBRATION & MARKER SETUP -->
+            <!-- ================= TAB 2: ROAD CALIBRATION ================= -->
             <div class="tab-pane" id="calibration-tab">
                 <section class="panel-section glass">
                     <div class="section-header">
                         <div class="section-title-wrap">
                             <h2>Interactive Road Geometry Calibration</h2>
-                            <p>Mark 4 reference spots on the road surface to compute perspective homography for exact speed measurement</p>
+                            <p>Click 4 reference spots on the road surface to compute perspective homography for accurate velocity estimation</p>
                         </div>
                     </div>
 
                     <div class="calibration-workspace">
                         <div class="canvas-container">
                             <canvas id="calibrationCanvas"></canvas>
-                            <div class="canvas-hint" id="canvasHint">Upload a video to load reference road frame</div>
+                            <div class="canvas-hint" id="canvasHint">Upload a video in the Live Operations tab to load the reference road frame</div>
                         </div>
 
                         <div class="calibration-controls-card">
@@ -211,13 +214,13 @@
                             <div class="form-group">
                                 <label for="roadWidthInput">Road / Lane Width (W in meters):</label>
                                 <input type="number" id="roadWidthInput" value="3.5" step="0.1" min="1.0" max="30.0" class="input-text">
-                                <small>e.g. 3.5m for single lane, 7.0m for two lanes</small>
+                                <small>e.g. 3.5m for a single lane, 7.0m for two lanes</small>
                             </div>
 
                             <div class="form-group">
                                 <label for="roadLengthInput">Road Segment Length (L in meters):</label>
                                 <input type="number" id="roadLengthInput" value="20.0" step="0.5" min="2.0" max="200.0" class="input-text">
-                                <small>Real physical distance between top and bottom road markers</small>
+                                <small>Actual distance between top markers and bottom markers</small>
                             </div>
 
                             <div class="calib-btn-row">
@@ -229,31 +232,40 @@
                 </section>
             </div>
 
-            <!-- TAB 3: VIOLATIONS HISTORY LOG -->
+            <!-- ================= TAB 3: VIOLATIONS HISTORY ================= -->
             <div class="tab-pane" id="history-tab">
                 <section class="panel-section glass">
                     <div class="section-header">
-                        <h2>Database Violation Records</h2>
-                        <input type="text" class="search-input" id="tableFilter" placeholder="Filter by plate number...">
+                        <div class="section-title-wrap">
+                            <h2>Database Speed Violations Log</h2>
+                            <p>All recorded speeding incidents stored with dual vehicle & license plate snapshots</p>
+                        </div>
+                        <input type="text" class="search-input" id="tableFilter" placeholder="Filter by plate text or Track ID...">
                     </div>
 
+                    <!-- History Violations Grid -->
+                    <div class="violations-cards-grid" id="historyViolationsGrid"></div>
+
+                    <!-- Detailed Table View -->
+                    <h3 style="margin-top: 32px; margin-bottom: 12px; font-size: 1.1rem;">Table View</h3>
                     <div class="table-container">
                         <table class="data-table">
                             <thead>
                                 <tr>
                                     <th>ID</th>
                                     <th>Track ID</th>
+                                    <th>Vehicle Crop</th>
+                                    <th>Plate Crop</th>
                                     <th>Plate Text</th>
                                     <th>Speed (km/h)</th>
                                     <th>Video Time</th>
                                     <th>Confidence</th>
                                     <th>System Time</th>
-                                    <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody id="violationsTableBody">
                                 <tr>
-                                    <td colspan="8" class="empty-row">No records stored in database yet.</td>
+                                    <td colspan="9" class="empty-row">No violations recorded in database yet.</td>
                                 </tr>
                             </tbody>
                         </table>
@@ -263,7 +275,7 @@
         </main>
     </div>
 
-    <!-- Modal for Detailed Inspection -->
+    <!-- Modal for Detailed Dual-Crop Inspection -->
     <div class="modal hidden" id="imageModal">
         <div class="modal-content glass">
             <span class="modal-close" id="modalClose">&times;</span>

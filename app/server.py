@@ -140,7 +140,7 @@ def _save_uploaded_file_with_tqdm(file: UploadFile, dest_path: str):
     total_size = file.file.tell()
     file.file.seek(0)
 
-    print(f"\n[INFO] Receiving: {file.filename} ({total_size / (1024 * 1024):.1f} MB)")
+    print(f"\n[INFO] Saving: {file.filename} ({total_size / (1024 * 1024):.1f} MB)")
 
     chunk_size = 1024 * 1024
     with tqdm(total=total_size, unit='B', unit_scale=True, unit_divisor=1024, desc=f"📥 Uploading {file.filename[:18]}") as pbar:
@@ -187,7 +187,7 @@ async def upload_video(file: UploadFile = File(...)):
     stream_state.current_frame = 0
     stream_state.should_stop = False
 
-    print("[INFO] Pre-warming models for this stream...")
+    print("[INFO] Pre-warming pipeline models...")
     await run_in_threadpool(get_or_init_pipeline, fps)
     print("🚀 [READY] Video loaded successfully!\n")
 
@@ -306,7 +306,12 @@ async def stream_video():
             cap.release()
             stream_state.is_streaming = False
 
-    return StreamingResponse(frame_generator(), media_type="multipart/x-mixed-replace; boundary=frame")
+    response = StreamingResponse(frame_generator(), media_type="multipart/x-mixed-replace; boundary=frame")
+    # Anti-caching HTTP headers
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 @app.post("/api/stream/stop")
@@ -318,7 +323,7 @@ async def stop_stream():
 @app.get("/api/calibration/reference-frame")
 async def get_reference_frame():
     if os.path.exists(REF_FRAME_PATH):
-        return FileResponse(REF_FRAME_PATH)
+        return FileResponse(REF_FRAME_PATH, headers={"Cache-Control": "no-cache"})
     return Response(status_code=204)
 
 

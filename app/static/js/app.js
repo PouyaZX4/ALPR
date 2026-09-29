@@ -2,18 +2,20 @@ document.addEventListener("DOMContentLoaded", () => {
     const API_BASE = "";
     const WS_URL = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws/live`;
 
-    // DOM Elements
+    // DOM Navigation
     const navItems = document.querySelectorAll(".nav-item");
     const tabPanes = document.querySelectorAll(".tab-pane");
 
+    // Metrics
     const valTotalViolations = document.getElementById("valTotalViolations");
     const valMaxSpeed = document.getElementById("valMaxSpeed");
     const valAvgSpeed = document.getElementById("valAvgSpeed");
     const valSpeedLimit = document.getElementById("valSpeedLimit");
 
+    // Stream Controls
     const videoFileInput = document.getElementById("videoFileInput");
-    const btnUploadTrigger = document.getElementById("btnUploadTrigger");
     const uploadBtnText = document.getElementById("uploadBtnText");
+    const uploadLabel = document.getElementById("uploadLabel");
     const btnStartStream = document.getElementById("btnStartStream");
     const btnStopStream = document.getElementById("btnStopStream");
     const liveStreamImg = document.getElementById("liveStreamImg");
@@ -23,14 +25,18 @@ document.addEventListener("DOMContentLoaded", () => {
     const thresholdRange = document.getElementById("thresholdRange");
     const thresholdVal = document.getElementById("thresholdVal");
 
+    // Live Feed & History Grids
     const liveViolationsGrid = document.getElementById("liveViolationsGrid");
     const noViolationsMsg = document.getElementById("noViolationsMsg");
+    const historyViolationsGrid = document.getElementById("historyViolationsGrid");
     const violationsTableBody = document.getElementById("violationsTableBody");
     const tableFilter = document.getElementById("tableFilter");
 
+    // Status
     const wsStatusDot = document.getElementById("wsStatusDot");
     const wsStatusText = document.getElementById("wsStatusText");
 
+    // Calibration
     const calibrationCanvas = document.getElementById("calibrationCanvas");
     const ctx = calibrationCanvas.getContext("2d");
     const canvasHint = document.getElementById("canvasHint");
@@ -46,6 +52,7 @@ document.addEventListener("DOMContentLoaded", () => {
         document.getElementById("ptBadge4")
     ];
 
+    // Modal
     const imageModal = document.getElementById("imageModal");
     const modalClose = document.getElementById("modalClose");
     const modalVehImage = document.getElementById("modalVehImage");
@@ -56,6 +63,7 @@ document.addEventListener("DOMContentLoaded", () => {
     let refImage = new Image();
     let isRefImageLoaded = false;
     let ws = null;
+    let allViolationsCache = [];
 
     // ---------------- TAB NAVIGATION ----------------
     function switchTab(tabId) {
@@ -70,6 +78,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
         if (tabId === "calibration-tab") {
             loadReferenceFrame();
+        } else if (tabId === "history-tab") {
+            fetchViolations();
         }
     }
 
@@ -96,7 +106,7 @@ document.addEventListener("DOMContentLoaded", () => {
                         handleNewViolation(message.data);
                     }
                 } catch (err) {
-                    console.error("WS Parse error:", err);
+                    console.error("WS parse error:", err);
                 }
             };
 
@@ -110,11 +120,11 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (ws) ws.close();
             };
         } catch (e) {
-            console.error("WS init error:", e);
+            console.error("WebSocket setup error:", e);
         }
     }
 
-    // ---------------- ROBUST UPLOAD WITH LIVE BROWSER PERCENTAGE ----------------
+    // ---------------- DIRECT FILE UPLOAD HANDLER ----------------
     if (videoFileInput) {
         videoFileInput.addEventListener("change", function () {
             if (!this.files || this.files.length === 0) return;
@@ -122,7 +132,7 @@ document.addEventListener("DOMContentLoaded", () => {
             const file = this.files[0];
             const fileSizeMB = (file.size / (1024 * 1024)).toFixed(1);
 
-            videoFileInput.style.pointerEvents = "none";
+            uploadLabel.style.pointerEvents = "none";
             if (uploadBtnText) uploadBtnText.textContent = `Uploading: 0% (${fileSizeMB} MB)...`;
 
             const formData = new FormData();
@@ -130,7 +140,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             const xhr = new XMLHttpRequest();
             xhr.open("POST", `${API_BASE}/api/upload`, true);
-            xhr.timeout = 900000; // 15 minutes timeout
+            xhr.timeout = 900000; // 15 mins for large 300MB-1GB files
 
             xhr.upload.onprogress = (event) => {
                 if (event.lengthComputable) {
@@ -141,17 +151,17 @@ document.addEventListener("DOMContentLoaded", () => {
             };
 
             xhr.onload = () => {
-                videoFileInput.style.pointerEvents = "auto";
+                uploadLabel.style.pointerEvents = "auto";
                 if (uploadBtnText) uploadBtnText.textContent = "Upload Video";
 
                 if (xhr.status === 200) {
                     try {
                         const data = JSON.parse(xhr.responseText);
-                        alert(`✅ Video Uploaded Successfully!\n\nFile: ${data.filename}\nFPS: ${data.fps} | Frames: ${data.total_frames}\n\nSwitching to Road Calibration...`);
+                        alert(`✅ Video Uploaded Successfully!\n\nFile: ${data.filename}\nFPS: ${data.fps} | Frames: ${data.total_frames}\n\nYou can now set road dots in Road Calibration or click 'Start Live Stream'.`);
                         btnStartStream.disabled = false;
-                        switchTab("calibration-tab");
+                        btnStartStream.classList.add("btn-primary");
                     } catch (err) {
-                        alert("Uploaded, but failed to parse server response.");
+                        alert("Uploaded, but server returned invalid response format.");
                     }
                 } else {
                     alert(`❌ Upload failed with status ${xhr.status}: ${xhr.statusText}`);
@@ -159,13 +169,13 @@ document.addEventListener("DOMContentLoaded", () => {
             };
 
             xhr.onerror = () => {
-                videoFileInput.style.pointerEvents = "auto";
+                uploadLabel.style.pointerEvents = "auto";
                 if (uploadBtnText) uploadBtnText.textContent = "Upload Video";
-                alert("❌ Network error occurred during upload. Check console.");
+                alert("❌ Upload failed due to a network connection error.");
             };
 
             xhr.ontimeout = () => {
-                videoFileInput.style.pointerEvents = "auto";
+                uploadLabel.style.pointerEvents = "auto";
                 if (uploadBtnText) uploadBtnText.textContent = "Upload Video";
                 alert("❌ Upload timed out.");
             };
@@ -174,11 +184,15 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
-    // ---------------- STREAM CONTROLS ----------------
+    // ---------------- STREAM CONTROLS (ANTI-CACHE FIX) ----------------
     btnStartStream.addEventListener("click", () => {
         streamPlaceholder.classList.add("hidden");
         liveStreamImg.classList.remove("hidden");
-        liveStreamImg.src = `${API_BASE}/api/stream/video?t=${Date.now()}`;
+
+        // Cache-busting query parameter forces fresh MJPEG socket
+        const streamUrl = `${API_BASE}/api/stream/video?t=${Date.now()}`;
+        liveStreamImg.src = streamUrl;
+
         streamBadge.textContent = "Streaming Live";
         streamBadge.className = "badge badge-alert";
 
@@ -187,7 +201,11 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     btnStopStream.addEventListener("click", async () => {
-        await fetch(`${API_BASE}/api/stream/stop`, { method: "POST" });
+        try {
+            await fetch(`${API_BASE}/api/stream/stop`, { method: "POST" });
+        } catch (e) {}
+
+        // Drop the image stream source to terminate the client connection cleanly
         liveStreamImg.src = "";
         liveStreamImg.classList.add("hidden");
         streamPlaceholder.classList.remove("hidden");
@@ -196,11 +214,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
         btnStartStream.disabled = false;
         btnStopStream.disabled = true;
+
         fetchStats();
         fetchViolations();
     });
 
-    // ---------------- INTERACTIVE ROAD CALIBRATION ----------------
+    // ---------------- ROAD CALIBRATION ENGINE ----------------
     function loadReferenceFrame() {
         refImage = new Image();
         refImage.src = `${API_BASE}/api/calibration/reference-frame?t=${Date.now()}`;
@@ -212,7 +231,7 @@ document.addEventListener("DOMContentLoaded", () => {
         refImage.onerror = () => {
             if (canvasHint) {
                 canvasHint.classList.remove("hidden");
-                canvasHint.textContent = "Upload a video first to display road for calibration.";
+                canvasHint.textContent = "Upload a video in the Live Operations tab to load the reference road frame.";
             }
         };
     }
@@ -226,7 +245,7 @@ document.addEventListener("DOMContentLoaded", () => {
         ctx.clearRect(0, 0, calibrationCanvas.width, calibrationCanvas.height);
         ctx.drawImage(refImage, 0, 0, calibrationCanvas.width, calibrationCanvas.height);
 
-        // Connecting lines
+        // Draw connecting polygon
         if (calibrationPoints.length > 1) {
             ctx.beginPath();
             ctx.moveTo(calibrationPoints[0].x, calibrationPoints[0].y);
@@ -243,7 +262,7 @@ document.addEventListener("DOMContentLoaded", () => {
             ctx.stroke();
         }
 
-        // Draw dot markers
+        // Draw marker dots
         const pointLabels = ["P1 (Top-L)", "P2 (Top-R)", "P3 (Bot-R)", "P4 (Bot-L)"];
         calibrationPoints.forEach((pt, idx) => {
             ctx.beginPath();
@@ -266,7 +285,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (!isRefImageLoaded) return;
 
         if (calibrationPoints.length >= 4) {
-            alert("All 4 road points are placed! Click 'Reset Spots' if you wish to redraw.");
+            alert("All 4 road points are placed! Click 'Reset Spots' to re-plot.");
             return;
         }
 
@@ -329,48 +348,54 @@ document.addEventListener("DOMContentLoaded", () => {
                 alert("Calibration error: " + data.detail);
             }
         } catch (err) {
-            alert("Failed to save: " + err.message);
+            alert("Failed to save calibration: " + err.message);
         }
     });
 
-    // ---------------- LIVE VIOLATION CARDS ----------------
-    function handleNewViolation(v) {
-        if (noViolationsMsg) noViolationsMsg.style.display = "none";
-
-        const delta = (v.speed_kmh - v.speed_limit).toFixed(1);
-        const card = document.createElement("div");
-        card.className = "violation-card";
-        card.innerHTML = `
-            <div class="vcard-header">
-                <span class="vcard-tag">TRACK ID #${v.track_id}</span>
-                <span class="vcard-speed">${v.speed_kmh.toFixed(1)} <small>km/h (+${delta})</small></span>
-            </div>
-            <div class="vcard-crops">
-                <div class="vcard-crop-box">
-                    <label>Vehicle Snapshot</label>
-                    <img src="${v.vehicle_image_url}" alt="Vehicle" onerror="this.src='/static/placeholder.png'">
+    // ---------------- REUSABLE VIOLATION CARD TEMPLATE ----------------
+    function createViolationCardHTML(v) {
+        const delta = (v.speed_kmh - (v.speed_limit || 60)).toFixed(1);
+        return `
+            <div class="violation-card">
+                <div class="vcard-header">
+                    <span class="vcard-tag">TRACK ID #${v.track_id}</span>
+                    <span class="vcard-speed">${v.speed_kmh.toFixed(1)} <small>km/h (+${delta})</small></span>
                 </div>
-                <div class="vcard-crop-box">
-                    <label>License Plate</label>
-                    <img src="${v.plate_image_url}" alt="Plate" onerror="this.src='/static/placeholder.png'">
+                <div class="vcard-crops">
+                    <div class="vcard-crop-box">
+                        <label>Vehicle Snapshot</label>
+                        <img src="${v.vehicle_image_url || '/' + v.vehicle_image_path}" alt="Vehicle" onerror="this.src='/static/placeholder.png'">
+                    </div>
+                    <div class="vcard-crop-box">
+                        <label>License Plate</label>
+                        <img src="${v.plate_image_url || '/' + v.plate_image_path}" alt="Plate" onerror="this.src='/static/placeholder.png'">
+                    </div>
                 </div>
-            </div>
-            <div class="vcard-body">
-                <div class="vcard-plate-box">
-                    <span class="plate-badge-styled">${v.plate_text || 'UNKNOWN'}</span>
-                    <span class="ocr-conf-tag">OCR: ${(v.ocr_confidence * 100).toFixed(0)}%</span>
-                </div>
-                <div class="vcard-footer">
-                    <span>Time: <strong class="vcard-time">${v.video_time}</strong></span>
-                    <button class="btn btn-secondary btn-sm" onclick="openInspectionModal('${v.vehicle_image_url}', '${v.plate_image_url}', '${v.plate_text}', ${v.speed_kmh}, '${v.video_time}', '${v.timestamp}')">
-                        Inspect
-                    </button>
+                <div class="vcard-body">
+                    <div class="vcard-plate-box">
+                        <span class="plate-badge-styled">${v.plate_text || 'UNKNOWN'}</span>
+                        <span class="ocr-conf-tag">OCR: ${((v.ocr_confidence || 0) * 100).toFixed(0)}%</span>
+                    </div>
+                    <div class="vcard-footer">
+                        <span>Time: <strong class="vcard-time">${v.video_time || '00:00.00'}</strong></span>
+                        <button class="btn btn-secondary btn-sm" onclick="openInspectionModal('${v.vehicle_image_url || '/' + v.vehicle_image_path}', '${v.plate_image_url || '/' + v.plate_image_path}', '${v.plate_text}', ${v.speed_kmh}, '${v.video_time}', '${v.timestamp}')">
+                            Inspect
+                        </button>
+                    </div>
                 </div>
             </div>
         `;
-        liveViolationsGrid.prepend(card);
+    }
+
+    function handleNewViolation(v) {
+        if (noViolationsMsg) noViolationsMsg.style.display = "none";
+
+        // Prepend to Live Feed Grid on Tab 1
+        const tempDiv = document.createElement("div");
+        tempDiv.innerHTML = createViolationCardHTML(v);
+        liveViolationsGrid.prepend(tempDiv.firstElementChild);
+
         fetchStats();
-        fetchViolations();
     }
 
     // ---------------- STATS & HISTORY ----------------
@@ -410,34 +435,56 @@ document.addEventListener("DOMContentLoaded", () => {
 
     async function fetchViolations() {
         try {
-            const res = await fetch(`${API_BASE}/api/violations?limit=50`);
+            const res = await fetch(`${API_BASE}/api/violations?limit=100`);
             const data = await res.json();
-            renderTable(data.violations || []);
-        } catch (err) {}
+            allViolationsCache = data.violations || [];
+            renderViolationsHistory(allViolationsCache);
+        } catch (err) {
+            console.error("Violations fetch error:", err);
+        }
     }
 
-    function renderTable(violations) {
-        if (!violations || violations.length === 0) {
-            violationsTableBody.innerHTML = `<tr><td colspan="8" class="empty-row">No violations recorded yet.</td></tr>`;
-            return;
+    function renderViolationsHistory(violations) {
+        // 1. Render History Cards
+        if (historyViolationsGrid) {
+            if (violations.length === 0) {
+                historyViolationsGrid.innerHTML = `<div class="no-violations-msg"><p>No violations recorded in database yet.</p></div>`;
+            } else {
+                historyViolationsGrid.innerHTML = violations.map(v => createViolationCardHTML(v)).join('');
+            }
         }
 
-        violationsTableBody.innerHTML = violations.map(v => `
-            <tr>
-                <td>#${v.id}</td>
-                <td><strong>Track ${v.track_id}</strong></td>
-                <td><span class="plate-badge-styled">${v.plate_text || 'UNKNOWN'}</span></td>
-                <td><span style="color: var(--danger); font-weight: 700;">${v.speed_kmh.toFixed(1)} km/h</span></td>
-                <td><span style="color: var(--primary); font-weight: 600;">${v.video_time || '00:00.00'}</span></td>
-                <td>${(v.ocr_confidence * 100).toFixed(0)}%</td>
-                <td>${v.timestamp}</td>
-                <td>
-                    <button class="btn btn-secondary btn-sm" onclick="openInspectionModal('/${v.vehicle_image_path}', '/${v.plate_image_path}', '${v.plate_text}', ${v.speed_kmh}, '${v.video_time}', '${v.timestamp}')">
-                        Inspect
-                    </button>
-                </td>
-            </tr>
-        `).join('');
+        // 2. Render History Table View
+        if (violationsTableBody) {
+            if (violations.length === 0) {
+                violationsTableBody.innerHTML = `<tr><td colspan="9" class="empty-row">No violations recorded yet.</td></tr>`;
+            } else {
+                violationsTableBody.innerHTML = violations.map(v => `
+                    <tr>
+                        <td>#${v.id}</td>
+                        <td><strong>Track ${v.track_id}</strong></td>
+                        <td><img src="/${v.vehicle_image_path}" class="tbl-crop-img" alt="Veh"></td>
+                        <td><img src="/${v.plate_image_path}" class="tbl-crop-img" alt="Plate"></td>
+                        <td><span class="plate-badge-styled">${v.plate_text || 'UNKNOWN'}</span></td>
+                        <td><span style="color: var(--danger); font-weight: 700;">${v.speed_kmh.toFixed(1)} km/h</span></td>
+                        <td><span style="color: var(--primary); font-weight: 600;">${v.video_time || '00:00.00'}</span></td>
+                        <td>${((v.ocr_confidence || 0) * 100).toFixed(0)}%</td>
+                        <td>${v.timestamp}</td>
+                    </tr>
+                `).join('');
+            }
+        }
+    }
+
+    if (tableFilter) {
+        tableFilter.addEventListener("input", (e) => {
+            const q = e.target.value.toLowerCase();
+            const filtered = allViolationsCache.filter(v =>
+                (v.plate_text && v.plate_text.toLowerCase().includes(q)) ||
+                String(v.track_id).includes(q)
+            );
+            renderViolationsHistory(filtered);
+        });
     }
 
     window.openInspectionModal = function (vehUrl, plateUrl, plateText, speed, videoTime, timestamp) {
@@ -462,9 +509,9 @@ document.addEventListener("DOMContentLoaded", () => {
         fetchViolations();
     });
 
-    // Start
+    // Start services
     setupWebSocket();
     fetchStats();
-    fetchViolations();
     fetchConfig();
+    fetchViolations();
 });
