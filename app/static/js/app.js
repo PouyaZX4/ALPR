@@ -36,14 +36,20 @@ document.addEventListener("DOMContentLoaded", () => {
     const wsStatusDot = document.getElementById("wsStatusDot");
     const wsStatusText = document.getElementById("wsStatusText");
 
-    // Calibration
+    // Calibration Elements
     const calibrationCanvas = document.getElementById("calibrationCanvas");
     const ctx = calibrationCanvas.getContext("2d");
     const canvasHint = document.getElementById("canvasHint");
+    const btnModeRoad = document.getElementById("btnModeRoad");
+    const btnModeLine = document.getElementById("btnModeLine");
+    const roadSection = document.getElementById("roadSection");
+    const lineSection = document.getElementById("lineSection");
+    const btnResetLine = document.getElementById("btnResetLine");
     const btnResetPoints = document.getElementById("btnResetPoints");
     const btnSaveCalibration = document.getElementById("btnSaveCalibration");
     const roadWidthInput = document.getElementById("roadWidthInput");
     const roadLengthInput = document.getElementById("roadLengthInput");
+    const gateStatusText = document.getElementById("gateStatusText");
 
     const ptBadges = [
         document.getElementById("ptBadge1"),
@@ -52,6 +58,9 @@ document.addEventListener("DOMContentLoaded", () => {
         document.getElementById("ptBadge4")
     ];
 
+    const lineBadge1 = document.getElementById("lineBadge1");
+    const lineBadge2 = document.getElementById("lineBadge2");
+
     // Modal
     const imageModal = document.getElementById("imageModal");
     const modalClose = document.getElementById("modalClose");
@@ -59,7 +68,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const modalPlateImage = document.getElementById("modalPlateImage");
     const modalInfo = document.getElementById("modalInfo");
 
-    let calibrationPoints = [];
+    // State
+    let clickMode = "road"; // "road" or "line"
+    let calibrationPoints = []; // 4 points [[x, y], ...]
+    let customGatePoints = [];  // 2 points [[x, y], [x, y]] (optional)
     let refImage = new Image();
     let isRefImageLoaded = false;
     let ws = null;
@@ -78,6 +90,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         if (tabId === "calibration-tab") {
             loadReferenceFrame();
+            loadCurrentCalibrationData();
         } else if (tabId === "history-tab") {
             fetchViolations();
         }
@@ -124,7 +137,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
     }
 
-    // ---------------- DIRECT FILE UPLOAD HANDLER ----------------
+    // ---------------- VIDEO UPLOAD (DIRECT & PROGRESS) ----------------
     if (videoFileInput) {
         videoFileInput.addEventListener("change", function () {
             if (!this.files || this.files.length === 0) return;
@@ -140,7 +153,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
             const xhr = new XMLHttpRequest();
             xhr.open("POST", `${API_BASE}/api/upload`, true);
-            xhr.timeout = 900000; // 15 mins for large 300MB-1GB files
+            xhr.timeout = 900000;
 
             xhr.upload.onprogress = (event) => {
                 if (event.lengthComputable) {
@@ -157,7 +170,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 if (xhr.status === 200) {
                     try {
                         const data = JSON.parse(xhr.responseText);
-                        alert(`✅ Video Uploaded Successfully!\n\nFile: ${data.filename}\nFPS: ${data.fps} | Frames: ${data.total_frames}\n\nYou can now set road dots in Road Calibration or click 'Start Live Stream'.`);
+                        alert(`✅ Video Uploaded Successfully!\n\nFile: ${data.filename}\nFPS: ${data.fps} | Frames: ${data.total_frames}\n\nYou can now adjust road dots and trigger lines in Road Calibration, or click 'Start Live Stream'.`);
                         btnStartStream.disabled = false;
                         btnStartStream.classList.add("btn-primary");
                     } catch (err) {
@@ -184,12 +197,11 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
-    // ---------------- STREAM CONTROLS (ANTI-CACHE FIX) ----------------
+    // ---------------- STREAM CONTROLS ----------------
     btnStartStream.addEventListener("click", () => {
         streamPlaceholder.classList.add("hidden");
         liveStreamImg.classList.remove("hidden");
 
-        // Cache-busting query parameter forces fresh MJPEG socket
         const streamUrl = `${API_BASE}/api/stream/video?t=${Date.now()}`;
         liveStreamImg.src = streamUrl;
 
@@ -205,7 +217,6 @@ document.addEventListener("DOMContentLoaded", () => {
             await fetch(`${API_BASE}/api/stream/stop`, { method: "POST" });
         } catch (e) {}
 
-        // Drop the image stream source to terminate the client connection cleanly
         liveStreamImg.src = "";
         liveStreamImg.classList.add("hidden");
         streamPlaceholder.classList.remove("hidden");
@@ -219,7 +230,29 @@ document.addEventListener("DOMContentLoaded", () => {
         fetchViolations();
     });
 
-    // ---------------- ROAD CALIBRATION ENGINE ----------------
+    // ---------------- ROAD CALIBRATION & DYNAMIC GATE ----------------
+    btnModeRoad.addEventListener("click", () => {
+        clickMode = "road";
+        btnModeRoad.className = "btn btn-sm btn-primary";
+        btnModeLine.className = "btn btn-sm btn-secondary";
+        roadSection.classList.remove("hidden");
+        lineSection.classList.add("hidden");
+    });
+
+    btnModeLine.addEventListener("click", () => {
+        clickMode = "line";
+        btnModeLine.className = "btn btn-sm btn-primary";
+        btnModeRoad.className = "btn btn-sm btn-secondary";
+        lineSection.classList.remove("hidden");
+        roadSection.classList.add("hidden");
+    });
+
+    btnResetLine.addEventListener("click", () => {
+        customGatePoints = [];
+        updateGateStatus();
+        renderCalibrationCanvas();
+    });
+
     function loadReferenceFrame() {
         refImage = new Image();
         refImage.src = `${API_BASE}/api/calibration/reference-frame?t=${Date.now()}`;
@@ -231,9 +264,27 @@ document.addEventListener("DOMContentLoaded", () => {
         refImage.onerror = () => {
             if (canvasHint) {
                 canvasHint.classList.remove("hidden");
-                canvasHint.textContent = "Upload a video in the Live Operations tab to load the reference road frame.";
+                canvasHint.textContent = "Upload a video in Live Operations tab to load the reference road frame.";
             }
         };
+    }
+
+    async function loadCurrentCalibrationData() {
+        try {
+            const res = await fetch(`${API_BASE}/api/calibration/current`);
+            if (res.ok) {
+                const data = await res.json();
+                if (data.calibration_points && data.calibration_points.length === 4) {
+                    calibrationPoints = data.calibration_points.map(p => ({ x: p[0], y: p[1] }));
+                }
+                if (data.custom_gate_line && data.custom_gate_line.length === 2) {
+                    customGatePoints = data.custom_gate_line.map(p => ({ x: p[0], y: p[1] }));
+                }
+                updateGateStatus();
+                updatePointBadges();
+                renderCalibrationCanvas();
+            }
+        } catch (e) {}
     }
 
     function renderCalibrationCanvas() {
@@ -245,7 +296,7 @@ document.addEventListener("DOMContentLoaded", () => {
         ctx.clearRect(0, 0, calibrationCanvas.width, calibrationCanvas.height);
         ctx.drawImage(refImage, 0, 0, calibrationCanvas.width, calibrationCanvas.height);
 
-        // Draw connecting polygon
+        // 1. Draw Road Polygon
         if (calibrationPoints.length > 1) {
             ctx.beginPath();
             ctx.moveTo(calibrationPoints[0].x, calibrationPoints[0].y);
@@ -254,7 +305,7 @@ document.addEventListener("DOMContentLoaded", () => {
             }
             if (calibrationPoints.length === 4) {
                 ctx.closePath();
-                ctx.fillStyle = "rgba(0, 229, 255, 0.25)";
+                ctx.fillStyle = "rgba(0, 229, 255, 0.20)";
                 ctx.fill();
             }
             ctx.strokeStyle = "#00e5ff";
@@ -262,7 +313,7 @@ document.addEventListener("DOMContentLoaded", () => {
             ctx.stroke();
         }
 
-        // Draw marker dots
+        // Draw Road Points P1..P4
         const pointLabels = ["P1 (Top-L)", "P2 (Top-R)", "P3 (Bot-R)", "P4 (Bot-L)"];
         calibrationPoints.forEach((pt, idx) => {
             ctx.beginPath();
@@ -278,16 +329,53 @@ document.addEventListener("DOMContentLoaded", () => {
             ctx.fillText(pointLabels[idx], pt.x + 12, pt.y - 8);
         });
 
+        // 2. Draw Trigger Gate Line (Magenta)
+        if (customGatePoints.length === 2) {
+            // Draw Custom Line
+            ctx.beginPath();
+            ctx.moveTo(customGatePoints[0].x, customGatePoints[0].y);
+            ctx.lineTo(customGatePoints[1].x, customGatePoints[1].y);
+            ctx.strokeStyle = "#ff007f";
+            ctx.lineWidth = 4;
+            ctx.stroke();
+
+            customGatePoints.forEach((pt, idx) => {
+                ctx.beginPath();
+                ctx.arc(pt.x, pt.y, 8, 0, 2 * Math.PI);
+                ctx.fillStyle = "#ff007f";
+                ctx.fill();
+                ctx.strokeStyle = "#fff";
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            });
+
+            ctx.fillStyle = "#ff007f";
+            ctx.font = "bold 16px 'JetBrains Mono', monospace";
+            ctx.fillText("CUSTOM TRIGGER GATE", customGatePoints[0].x + 15, customGatePoints[0].y - 12);
+
+        } else if (calibrationPoints.length === 4) {
+            // Default: Line between Dot 3 (P3) and Dot 4 (P4)
+            const p3 = calibrationPoints[2];
+            const p4 = calibrationPoints[3];
+            ctx.beginPath();
+            ctx.moveTo(p4.x, p4.y);
+            ctx.lineTo(p3.x, p3.y);
+            ctx.strokeStyle = "#ff007f";
+            ctx.lineWidth = 4;
+            ctx.stroke();
+
+            ctx.fillStyle = "#ff007f";
+            ctx.font = "bold 16px 'JetBrains Mono', monospace";
+            const midX = (p4.x + p3.x) / 2;
+            const midY = (p4.y + p3.y) / 2;
+            ctx.fillText("DEFAULT TRIGGER GATE (P3-P4)", midX - 120, midY + 25);
+        }
+
         updatePointBadges();
     }
 
     calibrationCanvas.addEventListener("click", (e) => {
         if (!isRefImageLoaded) return;
-
-        if (calibrationPoints.length >= 4) {
-            alert("All 4 road points are placed! Click 'Reset Spots' to re-plot.");
-            return;
-        }
 
         const rect = calibrationCanvas.getBoundingClientRect();
         const scaleX = calibrationCanvas.width / rect.width;
@@ -296,14 +384,42 @@ document.addEventListener("DOMContentLoaded", () => {
         const x = Math.round((e.clientX - rect.left) * scaleX);
         const y = Math.round((e.clientY - rect.top) * scaleY);
 
-        calibrationPoints.push({ x, y });
+        if (clickMode === "road") {
+            if (calibrationPoints.length >= 4) {
+                alert("All 4 road points are placed! Click 'Reset All Spots' if you wish to replot.");
+                return;
+            }
+            calibrationPoints.push({ x, y });
+        } else if (clickMode === "line") {
+            if (customGatePoints.length >= 2) {
+                customGatePoints = [];
+            }
+            customGatePoints.push({ x, y });
+        }
+
+        updateGateStatus();
         renderCalibrationCanvas();
     });
 
     btnResetPoints.addEventListener("click", () => {
         calibrationPoints = [];
+        customGatePoints = [];
+        updateGateStatus();
         renderCalibrationCanvas();
     });
+
+    function updateGateStatus() {
+        if (customGatePoints.length === 2) {
+            gateStatusText.textContent = `Custom Line [(${customGatePoints[0].x}, ${customGatePoints[0].y}) → (${customGatePoints[1].x}, ${customGatePoints[1].y})]`;
+            gateStatusText.style.color = "#00e5ff";
+        } else if (calibrationPoints.length === 4) {
+            gateStatusText.textContent = `Default Line between Dot 3 (P3) and Dot 4 (P4)`;
+            gateStatusText.style.color = "#ff4081";
+        } else {
+            gateStatusText.textContent = "Unset (Set 4 road spots or custom line)";
+            gateStatusText.style.color = "#8a99ad";
+        }
+    }
 
     function updatePointBadges() {
         const defaultNames = ["P1: Top-Left", "P2: Top-Right", "P3: Bottom-Right", "P4: Bottom-Left"];
@@ -317,11 +433,27 @@ document.addEventListener("DOMContentLoaded", () => {
                 badge.textContent = `${defaultNames[idx]} (Unset)`;
             }
         });
+
+        if (customGatePoints.length >= 1) {
+            lineBadge1.className = "point-badge set";
+            lineBadge1.textContent = `Pt 1: (${customGatePoints[0].x}, ${customGatePoints[0].y})`;
+        } else {
+            lineBadge1.className = "point-badge";
+            lineBadge1.textContent = "Line Pt 1: (Unset)";
+        }
+
+        if (customGatePoints.length === 2) {
+            lineBadge2.className = "point-badge set";
+            lineBadge2.textContent = `Pt 2: (${customGatePoints[1].x}, ${customGatePoints[1].y})`;
+        } else {
+            lineBadge2.className = "point-badge";
+            lineBadge2.textContent = "Line Pt 2: (Unset)";
+        }
     }
 
     btnSaveCalibration.addEventListener("click", async () => {
         if (calibrationPoints.length !== 4) {
-            alert("⚠️ Please click 4 spots on the road:\n1. Top-Left\n2. Top-Right\n3. Bottom-Right\n4. Bottom-Left");
+            alert("⚠️ Please plot all 4 spots on the road surface first:\n1. Top-Left\n2. Top-Right\n3. Bottom-Right\n4. Bottom-Left");
             return;
         }
 
@@ -331,7 +463,8 @@ document.addEventListener("DOMContentLoaded", () => {
         const payload = {
             pixel_points: calibrationPoints.map(p => [p.x, p.y]),
             road_width_m: roadWidth,
-            road_length_m: roadLength
+            road_length_m: roadLength,
+            custom_gate_line: customGatePoints.length === 2 ? customGatePoints.map(p => [p.x, p.y]) : null
         };
 
         try {
@@ -342,7 +475,7 @@ document.addEventListener("DOMContentLoaded", () => {
             });
             const data = await res.json();
             if (res.ok) {
-                alert("🎉 Road Calibration Saved! Return to 'Live Operations' and start stream.");
+                alert("🎉 Road Calibration & Gate Line Saved! Return to 'Live Operations' and start stream.");
                 switchTab("live-tab");
             } else {
                 alert("Calibration error: " + data.detail);
@@ -439,13 +572,10 @@ document.addEventListener("DOMContentLoaded", () => {
             const data = await res.json();
             allViolationsCache = data.violations || [];
             renderViolationsHistory(allViolationsCache);
-        } catch (err) {
-            console.error("Violations fetch error:", err);
-        }
+        } catch (err) {}
     }
 
     function renderViolationsHistory(violations) {
-        // 1. Render History Cards
         if (historyViolationsGrid) {
             if (violations.length === 0) {
                 historyViolationsGrid.innerHTML = `<div class="no-violations-msg"><p>No violations recorded in database yet.</p></div>`;
@@ -454,7 +584,6 @@ document.addEventListener("DOMContentLoaded", () => {
             }
         }
 
-        // 2. Render History Table View
         if (violationsTableBody) {
             if (violations.length === 0) {
                 violationsTableBody.innerHTML = `<tr><td colspan="9" class="empty-row">No violations recorded yet.</td></tr>`;
@@ -509,7 +638,6 @@ document.addEventListener("DOMContentLoaded", () => {
         fetchViolations();
     });
 
-    // Start services
     setupWebSocket();
     fetchStats();
     fetchConfig();

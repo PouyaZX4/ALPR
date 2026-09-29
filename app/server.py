@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
@@ -36,6 +37,7 @@ app.add_middleware(
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "configs", "config.yaml")
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 CALIBRATION_PATH = os.path.join(DATA_DIR, "calibration", "homography.npy")
+CALIB_PTS_PATH = os.path.join(DATA_DIR, "calibration", "calibration_points.json")
 REF_FRAME_PATH = os.path.join(DATA_DIR, "calibration", "reference_frame.jpg")
 
 os.makedirs(os.path.join(DATA_DIR, "raw_videos"), exist_ok=True)
@@ -140,7 +142,7 @@ def _save_uploaded_file_with_tqdm(file: UploadFile, dest_path: str):
     total_size = file.file.tell()
     file.file.seek(0)
 
-    print(f"\n[INFO] Saving: {file.filename} ({total_size / (1024 * 1024):.1f} MB)")
+    print(f"\n[INFO] Receiving: {file.filename} ({total_size / (1024 * 1024):.1f} MB)")
 
     chunk_size = 1024 * 1024
     with tqdm(total=total_size, unit='B', unit_scale=True, unit_divisor=1024, desc=f"📥 Uploading {file.filename[:18]}") as pbar:
@@ -205,11 +207,11 @@ def _process_stream_frame(pipeline, frame, frame_idx, speed_limit, total_frames,
     tracks, speed_records, new_violations = pipeline.process_frame(frame, frame_idx)
     speed_map = {rec.track_id: rec.speed_kmh for rec in speed_records}
 
-    # Virtual Enforcement Gate
-    gate_y = int(h_f * pipeline.capture_line_ratio)
-    cv2.line(frame, (0, gate_y), (w_f, gate_y), (255, 105, 180), 2)
-    cv2.putText(frame, "ENFORCEMENT GATE", (15, gate_y - 8),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 105, 180), 2)
+    # Draw Current Trigger Gate Line (Custom or Dot 3-4 Line)
+    line_p1, line_p2 = pipeline.get_capture_line_endpoints(w_f, h_f)
+    cv2.line(frame, line_p1, line_p2, (255, 0, 127), 3)
+    cv2.putText(frame, "CAPTURE GATE", (max(10, line_p1[0]), max(20, line_p1[1] - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 127), 2)
 
     for trk in tracks:
         x1, y1, x2, y2 = map(int, trk.bbox)
@@ -220,6 +222,8 @@ def _process_stream_frame(pipeline, frame, frame_idx, speed_limit, total_frames,
         color = (0, 0, 255) if is_speeding else (0, 230, 118)
 
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        cv2.circle(frame, (int(trk.ground_point[0]), int(trk.ground_point[1])), 4, (0, 255, 255), -1)
+
         label = f"ID:{tid} | {speed:.1f} km/h"
         (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
         cv2.rectangle(frame, (x1, y1 - 22), (x1 + text_w, y1), color, -1)
@@ -307,7 +311,6 @@ async def stream_video():
             stream_state.is_streaming = False
 
     response = StreamingResponse(frame_generator(), media_type="multipart/x-mixed-replace; boundary=frame")
-    # Anti-caching HTTP headers
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
@@ -330,6 +333,7 @@ async def get_reference_frame():
 @app.post("/api/calibration/save")
 async def save_calibration(payload: dict = Body(...)):
     pixel_points = payload.get("pixel_points", [])
+    custom_gate_line = payload.get("custom_gate_line", None)
     road_width_m = float(payload.get("road_width_m", 3.5))
     road_length_m = float(payload.get("road_length_m", 20.0))
 
@@ -347,12 +351,21 @@ async def save_calibration(payload: dict = Body(...)):
         H = compute_homography(pixel_points, world_points)
         save_homography(H, CALIBRATION_PATH)
 
+        # Save points to JSON
+        pts_data = {
+            "calibration_points": pixel_points,
+            "custom_gate_line": custom_gate_line
+        }
+        with open(CALIB_PTS_PATH, "w", encoding="utf-8") as f:
+            json.dump(pts_data, f)
+
         if stream_state.pipeline is not None:
+            stream_state.pipeline.set_calibration_data(pixel_points, custom_gate_line)
             stream_state.pipeline.set_homography(H)
 
         return {
             "status": "success",
-            "message": "Road calibration updated and active.",
+            "message": "Road calibration and gate updated and active.",
             "homography": H.tolist()
         }
     except Exception as e:
@@ -362,15 +375,25 @@ async def save_calibration(payload: dict = Body(...)):
 @app.get("/api/calibration/current")
 async def get_current_calibration():
     H = load_homography(CALIBRATION_PATH)
+    pts_data = {}
+    if os.path.exists(CALIB_PTS_PATH):
+        try:
+            with open(CALIB_PTS_PATH, "r", encoding="utf-8") as f:
+                pts_data = json.load(f)
+        except Exception:
+            pass
+
     return {
         "status": "success",
         "has_custom_calibration": os.path.exists(CALIBRATION_PATH),
-        "homography": H.tolist()
+        "homography": H.tolist(),
+        "calibration_points": pts_data.get("calibration_points", []),
+        "custom_gate_line": pts_data.get("custom_gate_line", None)
     }
 
 
 @app.get("/api/violations")
-async def get_violations(limit: int = 50):
+async def get_violations(limit: int = 100):
     config = get_config()
     db_path = config.get("paths", {}).get("database", os.path.join(DATA_DIR, "violations.db"))
     db = ViolationDB(db_path)

@@ -1,7 +1,8 @@
 import os
 import cv2
+import json
 import numpy as np
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 
 from src.tracking.tracker import VehicleTracker
 from src.speed.calibration import load_homography
@@ -13,7 +14,7 @@ from src.utils.data_types import Track, SpeedRecord, ViolationRecord
 
 
 def compute_sharpness(gray_img: np.ndarray) -> float:
-    """Computes Laplacian variance to measure image sharpness/clarity."""
+    """Computes Laplacian variance to measure sharpness."""
     if gray_img is None or gray_img.size == 0:
         return 0.0
     return float(cv2.Laplacian(gray_img, cv2.CV_64F).var())
@@ -25,15 +26,25 @@ class SpeedALPRPipeline:
         self.speed_threshold = float(config.get('thresholds', {}).get('speed_kmh', 60.0))
         self.fps = fps if fps > 0 else 30.0
 
-        # Virtual capture line ratio (0.65 = 65% down from the top)
-        self.capture_line_ratio = float(config.get('pipeline', {}).get('capture_line_ratio', 0.65))
+        self.calib_points: Optional[List[List[float]]] = None
+        self.custom_gate_line: Optional[List[List[float]]] = None
+
+        # Load Points from calibration_points.json if available
+        pts_path = "data/calibration/calibration_points.json"
+        if os.path.exists(pts_path):
+            try:
+                with open(pts_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.calib_points = data.get("calibration_points", None)
+                    self.custom_gate_line = data.get("custom_gate_line", None)
+            except Exception:
+                pass
 
         # 1. Load Calibration Matrix
         homography_path = config.get('paths', {}).get('homography', 'data/calibration/homography.npy')
         if os.path.exists(homography_path):
             self.H = load_homography(homography_path)
         else:
-            print(f"[WARNING] '{homography_path}' not found! Using identity matrix fallback.")
             self.H = np.eye(3, dtype=np.float32)
 
         # 2. Submodules
@@ -73,10 +84,42 @@ class SpeedALPRPipeline:
             self.H = H
             self.speed_estimator.set_homography(H)
 
+    def set_calibration_data(self, calib_points: Optional[List[List[float]]], custom_gate_line: Optional[List[List[float]]]):
+        self.calib_points = calib_points
+        self.custom_gate_line = custom_gate_line
+
+    def get_capture_line_endpoints(self, w_frame: int, h_frame: int) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+        """
+        Determines the 2 endpoints of the active trigger line.
+        1. If custom_gate_line is set: returns those 2 points.
+        2. Else if 4 road dots exist: returns line between Dot 3 (P3) and Dot 4 (P4).
+        3. Else fallback: returns horizontal line at 70% frame height.
+        """
+        if self.custom_gate_line and len(self.custom_gate_line) == 2:
+            p1 = (int(self.custom_gate_line[0][0]), int(self.custom_gate_line[0][1]))
+            p2 = (int(self.custom_gate_line[1][0]), int(self.custom_gate_line[1][1]))
+            return p1, p2
+        elif self.calib_points and len(self.calib_points) == 4:
+            # P4 (Bottom-Left) -> P3 (Bottom-Right)
+            p4 = (int(self.calib_points[3][0]), int(self.calib_points[3][1]))
+            p3 = (int(self.calib_points[2][0]), int(self.calib_points[2][1]))
+            return p4, p3
+        else:
+            default_y = int(h_frame * 0.70)
+            return (0, default_y), (w_frame, default_y)
+
+    def get_capture_y_at_x(self, x: float, w_frame: int, h_frame: int) -> int:
+        """Calculates expected line Y for a given vehicle X contact coordinate."""
+        (x1, y1), (x2, y2) = self.get_capture_line_endpoints(w_frame, h_frame)
+        if abs(x2 - x1) < 1e-4:
+            return int((y1 + y2) / 2)
+        slope = (y2 - y1) / (x2 - x1)
+        y = y1 + slope * (x - x1)
+        return int(np.clip(y, 10, h_frame - 10))
+
     def process_frame(self, frame: np.ndarray, frame_idx: int) -> Tuple[List[Track], List[SpeedRecord], List[ViolationRecord]]:
         h_frame, w_frame, _ = frame.shape
-        capture_line_y = int(h_frame * self.capture_line_ratio)
-        gate_margin = int(h_frame * 0.15)
+        gate_margin = int(h_frame * 0.12)
 
         new_violations: List[ViolationRecord] = []
 
@@ -93,7 +136,11 @@ class SpeedALPRPipeline:
             tid = trk.track_id
             speed = speed_map.get(tid, 0.0)
             x1, y1, x2, y2 = map(int, trk.bbox)
+            ground_x = float(trk.ground_point[0])
             ground_y = int(trk.ground_point[1])
+
+            # Get target line Y specifically for this vehicle's current lane position
+            target_line_y = self.get_capture_y_at_x(ground_x, w_frame, h_frame)
 
             if speed > self.speed_threshold and tid not in self.confirmed_violations:
                 if tid not in self.candidates:
@@ -102,19 +149,19 @@ class SpeedALPRPipeline:
                         "best_score": -1.0,
                         "best_veh_crop": None,
                         "best_plate_crop": None,
-                        "best_plate_text": "",
-                        "best_conf": 0.0,
                         "frame_idx": frame_idx,
                         "video_time": time_str_map.get(tid, format_video_time(frame_idx, self.fps)[0]),
-                        "in_gate_frames": 0
+                        "in_gate_frames": 0,
+                        "last_ground_y": ground_y
                     }
                 else:
                     self.candidates[tid]["max_speed"] = max(self.candidates[tid]["max_speed"], speed)
+                    self.candidates[tid]["last_ground_y"] = ground_y
 
-            # Sample within the high-resolution focal gate
+            # Sample near the trigger line
             if tid in self.candidates:
                 cand = self.candidates[tid]
-                is_in_gate = (capture_line_y - gate_margin) <= ground_y <= (capture_line_y + gate_margin)
+                is_in_gate = (target_line_y - gate_margin) <= ground_y <= (target_line_y + gate_margin)
 
                 if is_in_gate:
                     cand["in_gate_frames"] += 1
@@ -154,16 +201,23 @@ class SpeedALPRPipeline:
                                     cand["frame_idx"] = frame_idx
                                     cand["video_time"] = time_str_map.get(tid, cand["video_time"])
 
-        # 3. Finalize candidates
+        # 3. Finalize candidate when crossing the line
         for tid in list(self.candidates.keys()):
             cand = self.candidates[tid]
-            ground_y = next((int(t.ground_point[1]) for t in tracks if t.track_id == tid), None)
+            current_track = next((t for t in tracks if t.track_id == tid), None)
 
-            crossed_gate = (ground_y is not None and ground_y > (capture_line_y + gate_margin))
+            if current_track is not None:
+                curr_ground_x = float(current_track.ground_point[0])
+                curr_ground_y = int(current_track.ground_point[1])
+                target_line_y = self.get_capture_y_at_x(curr_ground_x, w_frame, h_frame)
+                crossed_line = (curr_ground_y >= target_line_y)
+            else:
+                crossed_line = True
+
             left_frame = (tid not in active_track_ids)
-            enough_gate_samples = (cand["in_gate_frames"] >= 8)
+            enough_samples = (cand["in_gate_frames"] >= 8)
 
-            if (crossed_gate or left_frame or enough_gate_samples) and cand["best_plate_crop"] is not None:
+            if (crossed_line or left_frame or enough_samples) and cand["best_plate_crop"] is not None:
                 ocr_result = self.ocr_engine.read(cand["best_plate_crop"])
 
                 crop_dir = os.path.join("data", "violations")

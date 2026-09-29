@@ -224,6 +224,11 @@ body {
     transition: all 0.2s ease;
 }
 
+.btn-sm {
+    padding: 6px 14px;
+    font-size: 0.8rem;
+}
+
 .upload-label {
     cursor: pointer;
 }
@@ -258,10 +263,6 @@ body {
     background: var(--danger);
     color: #fff;
     box-shadow: 0 4px 15px var(--danger-glow);
-}
-
-.btn-danger:hover:not(:disabled) {
-    opacity: 0.9;
 }
 
 /* Metrics Grid */
@@ -358,7 +359,7 @@ body {
     border: 1px solid rgba(255, 23, 68, 0.3);
 }
 
-/* Speed Slider Card */
+/* Threshold Card */
 .threshold-control-card {
     background: rgba(0, 0, 0, 0.25);
     border: 1px solid var(--border-color);
@@ -412,7 +413,7 @@ body {
     border: 2px solid #fff;
 }
 
-/* Video Stream Box */
+/* Video Box */
 .video-stream-wrapper {
     background: #000;
     border-radius: var(--radius-md);
@@ -626,6 +627,12 @@ body {
     gap: 14px;
 }
 
+.mode-switch-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
 .guide-text {
     font-size: 0.85rem;
     color: var(--text-muted);
@@ -652,6 +659,24 @@ body {
     background: rgba(0, 229, 255, 0.15);
     border-color: var(--primary);
     color: var(--primary);
+}
+
+.gate-status-box {
+    background: rgba(255, 64, 129, 0.1);
+    border: 1px dashed rgba(255, 64, 129, 0.4);
+    border-radius: var(--radius-sm);
+    padding: 10px 14px;
+    font-size: 0.85rem;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.gate-status-tag {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    letter-spacing: 0.5px;
+    font-weight: 700;
 }
 
 .form-group {
