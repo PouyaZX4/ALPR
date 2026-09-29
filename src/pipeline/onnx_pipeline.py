@@ -14,12 +14,14 @@ from src.utils.data_types import Track, SpeedRecord, ViolationRecord
 
 
 def compute_sharpness(gray_img: np.ndarray) -> float:
+    """Computes the Laplacian variance to evaluate image focus and sharpness."""
     if gray_img is None or gray_img.size == 0:
         return 0.0
     return float(cv2.Laplacian(gray_img, cv2.CV_64F).var())
 
 
 def enhance_plate_contrast(plate_img: np.ndarray) -> np.ndarray:
+    """Applies unsharp masking to enhance Persian plate character edges."""
     if plate_img is None or plate_img.size == 0:
         return plate_img
     gaussian = cv2.GaussianBlur(plate_img, (0, 0), 2.0)
@@ -36,7 +38,8 @@ class OnnxSpeedALPRPipeline:
         self.calib_points: Optional[List[List[float]]] = None
         self.custom_gate_line: Optional[List[List[float]]] = None
 
-        pts_path = "data/calibration/calibration_points.json"
+        # Load calibration points if stored on disk
+        pts_path = config.get('paths', {}).get('calibration_points', "data/calibration/calibration_points.json")
         if os.path.exists(pts_path):
             try:
                 with open(pts_path, "r", encoding="utf-8") as f:
@@ -46,30 +49,54 @@ class OnnxSpeedALPRPipeline:
             except Exception:
                 pass
 
+        # Load Homography Matrix
         homography_path = config.get('paths', {}).get('homography', 'data/calibration/homography.npy')
         self.H = load_homography(homography_path) if os.path.exists(homography_path) else np.eye(3, dtype=np.float32)
 
         print("[INFO] Initializing Clean-Crop ONNX Engines...")
-        self.vehicle_detector = OnnxYOLO("models/onnx/vehicle_detector.onnx", imgsz=1280, conf_thresh=0.25)
+        veh_model = config.get('paths', {}).get('vehicle_detector', "models/onnx/vehicle_detector.onnx")
+        self.vehicle_detector = OnnxYOLO(
+            veh_model, 
+            imgsz=1280, 
+            conf_thresh=config.get('thresholds', {}).get('vehicle_conf', 0.25)
+        )
         self.vehicle_classes = [2, 3, 5, 7]  # car, motorcycle, bus, truck
 
         self.tracker = OnnxVehicleTracker(iou_threshold=0.20, max_misses=15)
-        self.speed_estimator = SpeedEstimator(self.H, fps=self.fps, window_size=config.get('speed', {}).get('smoothing_window', 8))
+        self.speed_estimator = SpeedEstimator(
+            self.H, 
+            fps=self.fps, 
+            window_size=config.get('speed', {}).get('smoothing_window', 8)
+        )
 
-        self.plate_detector = OnnxYOLO("models/onnx/plate_detector.onnx", imgsz=640, conf_thresh=0.20)
-        self.ocr_engine = OnnxPlateOCR("models/onnx/crnn_plate_ocr.onnx", "models/onnx/ocr_vocab.json")
-        self.db = ViolationDB(db_path=config.get('paths', {}).get('database', 'data/violations.db'))
+        plate_model = config.get('paths', {}).get('plate_detector', "models/onnx/plate_detector.onnx")
+        self.plate_detector = OnnxYOLO(
+            plate_model, 
+            imgsz=640, 
+            conf_thresh=config.get('thresholds', {}).get('plate_conf', 0.20)
+        )
+        
+        ocr_model = config.get('paths', {}).get('ocr_model', "models/onnx/crnn_plate_ocr.onnx")
+        ocr_vocab = config.get('paths', {}).get('ocr_vocab', "models/onnx/ocr_vocab.json")
+        self.ocr_engine = OnnxPlateOCR(ocr_model, ocr_vocab)
+        
+        db_path = config.get('paths', {}).get('database', 'data/violations.db')
+        self.db = ViolationDB(db_path=db_path)
 
-        self.confirmed_violations = set()
+        # Violation Deduplication State
+        self.confirmed_violations = set()          # Set of confirmed track IDs
         self.candidates: Dict[int, Dict[str, Any]] = {}
+        self.recent_plates: Dict[str, int] = {}    # {plate_str: frame_idx}
+        self.plate_cooldown_frames = int(self.fps * 12)  # 12-second temporal cooldown
 
         self.detect_interval = 2
-        print("✅ ONNX Pipeline Ready with Proportional Context Margins!")
+        print("✅ ONNX Speed & Persian ALPR Pipeline Successfully Initialized!")
 
     def set_fps(self, fps: float):
         if fps and fps > 0:
             self.fps = float(fps)
             self.speed_estimator.set_fps(fps)
+            self.plate_cooldown_frames = int(self.fps * 12)
 
     def set_homography(self, H: np.ndarray):
         if H is not None:
@@ -119,7 +146,7 @@ class OnnxSpeedALPRPipeline:
         time_str_map = {rec.track_id: rec.video_time_str for rec in speed_records}
         active_track_ids = {trk.track_id for trk in tracks}
 
-        # 3. Dynamic Enforcement Gate
+        # 3. Dynamic Enforcement Gate & Candidate Sampling
         for trk in tracks:
             tid = trk.track_id
             speed = speed_map.get(tid, 0.0)
@@ -129,6 +156,7 @@ class OnnxSpeedALPRPipeline:
 
             target_line_y = self.get_capture_y_at_x(ground_x, w_frame, h_frame)
 
+            # Candidate registration
             if speed > self.speed_threshold and tid not in self.confirmed_violations:
                 if tid not in self.candidates:
                     self.candidates[tid] = {
@@ -143,7 +171,7 @@ class OnnxSpeedALPRPipeline:
                 else:
                     self.candidates[tid]["max_speed"] = max(self.candidates[tid]["max_speed"], speed)
 
-            # High-Resolution Sampling in the Focal Zone
+            # Sampling highest-quality plate crop inside gate
             if tid in self.candidates:
                 cand = self.candidates[tid]
                 is_in_gate = (target_line_y - gate_margin) <= ground_y <= (target_line_y + gate_margin)
@@ -151,7 +179,6 @@ class OnnxSpeedALPRPipeline:
                 if is_in_gate:
                     cand["in_gate_frames"] += 1
 
-                    # Extra +4% context padding on vehicle crop (10% width, 12% height)
                     bw = x2 - x1
                     bh = y2 - y1
                     pad_vw = int(bw * 0.10)
@@ -172,7 +199,6 @@ class OnnxSpeedALPRPipeline:
                             px1, py1, px2, py2 = map(int, plate_det.bbox)
                             pw, ph = px2 - px1, py2 - py1
 
-                            # Generous +4% extra plate padding (15% horizontal, 18% vertical)
                             pad_x = int(pw * 0.15)
                             pad_y = int(ph * 0.18)
                             c_px1 = max(0, px1 - pad_x)
@@ -195,9 +221,7 @@ class OnnxSpeedALPRPipeline:
                                     cand["frame_idx"] = frame_idx
                                     cand["video_time"] = time_str_map.get(tid, cand["video_time"])
 
-
-
-        # 4. Trigger OCR when crossing the line
+        # 4. Trigger OCR when crossing the gate or exiting (Single Execution Block)
         for tid in list(self.candidates.keys()):
             cand = self.candidates[tid]
             current_track = next((t for t in tracks if t.track_id == tid), None)
@@ -216,6 +240,13 @@ class OnnxSpeedALPRPipeline:
             if (crossed_line or left_frame or enough_samples) and cand["best_plate_crop"] is not None:
                 ocr_result = self.ocr_engine.read(cand["best_plate_crop"])
                 final_display_plate = ocr_result.formatted_text
+                normalized_plate = final_display_plate.strip().replace(" ", "")
+
+                # Check duplicate plate within temporal cooldown
+                is_duplicate = False
+                if normalized_plate in self.recent_plates:
+                    if (frame_idx - self.recent_plates[normalized_plate]) < self.plate_cooldown_frames:
+                        is_duplicate = True
 
                 crop_dir = os.path.join("data", "violations")
                 os.makedirs(crop_dir, exist_ok=True)
@@ -226,91 +257,38 @@ class OnnxSpeedALPRPipeline:
                 cv2.imwrite(veh_crop_path, cand["best_veh_crop"])
                 cv2.imwrite(plate_crop_path, cand["best_plate_crop"])
 
-                row_id = self.db.insert_violation(
-                    track_id=tid,
-                    speed_kmh=cand["max_speed"],
-                    plate_text=final_display_plate,
-                    ocr_confidence=float(ocr_result.confidence),
-                    video_time=cand["video_time"],
-                    vehicle_image_path=veh_crop_path.replace("\\", "/"),
-                    plate_image_path=plate_crop_path.replace("\\", "/")
-                )
+                if not is_duplicate and normalized_plate != "UNKNOWN":
+                    row_id = self.db.insert_violation(
+                        track_id=tid,
+                        speed_kmh=cand["max_speed"],
+                        plate_text=final_display_plate,
+                        ocr_confidence=float(ocr_result.confidence),
+                        video_time=cand["video_time"],
+                        vehicle_image_path=veh_crop_path.replace("\\", "/"),
+                        plate_image_path=plate_crop_path.replace("\\", "/")
+                    )
 
-                self.confirmed_violations.add(tid)
+                    self.confirmed_violations.add(tid)
+                    self.recent_plates[normalized_plate] = frame_idx
+
+                    violation_rec = ViolationRecord(
+                        id=row_id,
+                        track_id=tid,
+                        speed_kmh=cand["max_speed"],
+                        speed_limit=self.speed_threshold,
+                        plate_text=final_display_plate,
+                        ocr_confidence=float(ocr_result.confidence),
+                        video_time=cand["video_time"],
+                        timestamp=cand["video_time"],
+                        vehicle_image_path=veh_crop_path.replace("\\", "/"),
+                        plate_image_path=plate_crop_path.replace("\\", "/")
+                    )
+                    new_violations.append(violation_rec)
+                    print(f"🚨 [VIOLATION LOGGED] #{row_id} | Track: {tid} | Speed: {cand['max_speed']:.1f} km/h | Plate: {final_display_plate}")
+                else:
+                    self.confirmed_violations.add(tid)
+
                 del self.candidates[tid]
-
-                violation_rec = ViolationRecord(
-                    id=row_id,
-                    track_id=tid,
-                    speed_kmh=cand["max_speed"],
-                    speed_limit=self.speed_threshold,
-                    plate_text=final_display_plate,
-                    ocr_confidence=float(ocr_result.confidence),
-                    video_time=cand["video_time"],
-                    timestamp=cand["video_time"],
-                    vehicle_image_path=veh_crop_path.replace("\\", "/"),
-                    plate_image_path=plate_crop_path.replace("\\", "/")
-                )
-                new_violations.append(violation_rec)
-                print(f"🚨 [VIOLATION CONFIRMED] ID: {row_id} | Track: {tid} | Speed: {cand['max_speed']:.1f} km/h | Plate: '{final_display_plate}'")
-
-            elif left_frame:
-                del self.candidates[tid]
-        # 4. Trigger OCR when crossing the line
-        for tid in list(self.candidates.keys()):
-            cand = self.candidates[tid]
-            current_track = next((t for t in tracks if t.track_id == tid), None)
-
-            if current_track is not None:
-                curr_ground_x = float(current_track.ground_point[0])
-                curr_ground_y = int(current_track.ground_point[1])
-                target_line_y = self.get_capture_y_at_x(curr_ground_x, w_frame, h_frame)
-                crossed_line = (curr_ground_y >= target_line_y)
-            else:
-                crossed_line = True
-
-            left_frame = (tid not in active_track_ids)
-            enough_samples = (cand["in_gate_frames"] >= 6)
-
-            if (crossed_line or left_frame or enough_samples) and cand["best_plate_crop"] is not None:
-                ocr_result = self.ocr_engine.read(cand["best_plate_crop"])
-
-                crop_dir = os.path.join("data", "violations")
-                os.makedirs(crop_dir, exist_ok=True)
-                f_idx = cand["frame_idx"]
-                veh_crop_path = os.path.join(crop_dir, f"veh_track_{tid}_{f_idx}.png")
-                plate_crop_path = os.path.join(crop_dir, f"plate_track_{tid}_{f_idx}.png")
-
-                cv2.imwrite(veh_crop_path, cand["best_veh_crop"])
-                cv2.imwrite(plate_crop_path, cand["best_plate_crop"])
-
-                row_id = self.db.insert_violation(
-                    track_id=tid,
-                    speed_kmh=cand["max_speed"],
-                    plate_text=ocr_result.plate_text,
-                    ocr_confidence=float(ocr_result.confidence),
-                    video_time=cand["video_time"],
-                    vehicle_image_path=veh_crop_path.replace("\\", "/"),
-                    plate_image_path=plate_crop_path.replace("\\", "/")
-                )
-
-                self.confirmed_violations.add(tid)
-                del self.candidates[tid]
-
-                violation_rec = ViolationRecord(
-                    id=row_id,
-                    track_id=tid,
-                    speed_kmh=cand["max_speed"],
-                    speed_limit=self.speed_threshold,
-                    plate_text=ocr_result.plate_text,
-                    ocr_confidence=float(ocr_result.confidence),
-                    video_time=cand["video_time"],
-                    timestamp=cand["video_time"],
-                    vehicle_image_path=veh_crop_path.replace("\\", "/"),
-                    plate_image_path=plate_crop_path.replace("\\", "/")
-                )
-                new_violations.append(violation_rec)
-                print(f"🚨 [HIGH QUALITY VIOLATION RECORDED] ID: {row_id} | Track: {tid} | Speed: {cand['max_speed']:.1f} km/h | Plate: '{ocr_result.plate_text}'")
 
             elif left_frame:
                 del self.candidates[tid]

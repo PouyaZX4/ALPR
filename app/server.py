@@ -21,18 +21,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 
 from src.database.db import ViolationDB
-from src.pipeline.pipeline import SpeedALPRPipeline
+from src.pipeline.onnx_pipeline import OnnxSpeedALPRPipeline
 from src.speed.calibration import compute_homography, save_homography, load_homography, extract_reference_frame
-
-app = FastAPI(title="Speed-Triggered ALPR System")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "configs", "config.yaml")
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
@@ -43,6 +33,18 @@ REF_FRAME_PATH = os.path.join(DATA_DIR, "calibration", "reference_frame.jpg")
 os.makedirs(os.path.join(DATA_DIR, "raw_videos"), exist_ok=True)
 os.makedirs(os.path.join(DATA_DIR, "violations"), exist_ok=True)
 os.makedirs(os.path.join(DATA_DIR, "calibration"), exist_ok=True)
+
+# -------------------------------------------------------------
+# Ensure static directory & genuine placeholder.png exist on disk
+# -------------------------------------------------------------
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+os.makedirs(static_dir, exist_ok=True)
+
+placeholder_file = os.path.join(static_dir, "placeholder.png")
+if not os.path.exists(placeholder_file):
+    dummy_img = np.full((180, 320, 3), 18, dtype=np.uint8)
+    cv2.putText(dummy_img, "NO PREVIEW", (90, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (80, 80, 80), 2, cv2.LINE_AA)
+    cv2.imwrite(placeholder_file, dummy_img)
 
 
 class ConnectionManager:
@@ -71,11 +73,12 @@ class LiveStreamState:
     def __init__(self):
         self.current_video_path: str = ""
         self.is_streaming: bool = False
-        self.pipeline: Optional[SpeedALPRPipeline] = None
+        self.pipeline: Optional[OnnxSpeedALPRPipeline] = None
         self.fps: float = 30.0
         self.total_frames: int = 0
         self.current_frame: int = 0
         self.should_stop: bool = False
+        self.rotation_angle: int = 0  # 0, 90, 180, 270
 
 stream_state = LiveStreamState()
 
@@ -85,27 +88,42 @@ def get_config() -> dict:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             return yaml.safe_load(f)
     return {
-        "paths": {
-            "vehicle_detector_weights": "yolo11s.pt",
-            "homography": CALIBRATION_PATH,
-            "database": os.path.join(DATA_DIR, "violations.db")
-        },
-        "thresholds": {"speed_kmh": 60, "vehicle_conf": 0.3, "plate_conf": 0.3},
+        "paths": {"database": os.path.join(DATA_DIR, "violations.db")},
+        "thresholds": {"speed_kmh": 60.0},
         "speed": {"smoothing_window": 8}
     }
 
 
-def get_or_init_pipeline(fps: float = 30.0) -> SpeedALPRPipeline:
+def get_or_init_pipeline(fps: float = 30.0) -> OnnxSpeedALPRPipeline:
     if stream_state.pipeline is None:
         config = get_config()
-        stream_state.pipeline = SpeedALPRPipeline(config, fps=fps)
+        stream_state.pipeline = OnnxSpeedALPRPipeline(config, fps=fps)
     else:
         stream_state.pipeline.set_fps(fps)
     return stream_state.pipeline
 
 
-static_dir = os.path.join(os.path.dirname(__file__), "static")
-os.makedirs(static_dir, exist_ok=True)
+def apply_rotation(frame: np.ndarray, angle: int) -> np.ndarray:
+    if angle == 90:
+        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    elif angle == 180:
+        return cv2.rotate(frame, cv2.ROTATE_180)
+    elif angle == 270:
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return frame
+
+
+app = FastAPI(title="Speed-Triggered Persian ALPR System")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Mount asset directories
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.mount("/data", StaticFiles(directory=DATA_DIR), name="data")
 
@@ -120,7 +138,7 @@ async def serve_index():
     index_path = os.path.join(static_dir, "index.html")
     if os.path.exists(index_path):
         return FileResponse(index_path)
-    return HTMLResponse("<h2>ALPR Dashboard Static Asset Loading...</h2>")
+    return HTMLResponse("<h2>Error: static/index.html not found!</h2>")
 
 
 @app.websocket("/ws/live")
@@ -142,7 +160,7 @@ def _save_uploaded_file_with_tqdm(file: UploadFile, dest_path: str):
     total_size = file.file.tell()
     file.file.seek(0)
 
-    print(f"\n[INFO] Receiving: {file.filename} ({total_size / (1024 * 1024):.1f} MB)")
+    print(f"\n[INFO] Receiving file: {file.filename} ({total_size / (1024 * 1024):.1f} MB)")
 
     chunk_size = 1024 * 1024
     with tqdm(total=total_size, unit='B', unit_scale=True, unit_divisor=1024, desc=f"📥 Uploading {file.filename[:18]}") as pbar:
@@ -155,11 +173,12 @@ def _save_uploaded_file_with_tqdm(file: UploadFile, dest_path: str):
                 pbar.update(len(chunk))
 
 
-def _probe_video_sync(file_path: str):
+def _probe_video_sync(file_path: str, rotation_angle: int = 0):
     ref_frame = extract_reference_frame(file_path, 25)
     if ref_frame is None:
         ref_frame = extract_reference_frame(file_path, 0)
     if ref_frame is not None:
+        ref_frame = apply_rotation(ref_frame, rotation_angle)
         cv2.imwrite(REF_FRAME_PATH, ref_frame)
 
     cap = cv2.VideoCapture(file_path)
@@ -179,9 +198,7 @@ async def upload_video(file: UploadFile = File(...)):
     file_path = os.path.join(save_dir, file.filename)
 
     await run_in_threadpool(_save_uploaded_file_with_tqdm, file, file_path)
-
-    print("[INFO] Probing video and extracting reference frame...")
-    fps, total_frames = await run_in_threadpool(_probe_video_sync, file_path)
+    fps, total_frames = await run_in_threadpool(_probe_video_sync, file_path, stream_state.rotation_angle)
 
     stream_state.current_video_path = file_path
     stream_state.fps = fps
@@ -189,7 +206,7 @@ async def upload_video(file: UploadFile = File(...)):
     stream_state.current_frame = 0
     stream_state.should_stop = False
 
-    print("[INFO] Pre-warming pipeline models...")
+    print("[INFO] Initializing pipeline with uploaded video...")
     await run_in_threadpool(get_or_init_pipeline, fps)
     print("🚀 [READY] Video loaded successfully!\n")
 
@@ -202,16 +219,38 @@ async def upload_video(file: UploadFile = File(...)):
     }
 
 
-def _process_stream_frame(pipeline, frame, frame_idx, speed_limit, total_frames, fps):
+@app.post("/api/video/rotate")
+async def rotate_video(payload: dict = Body(...)):
+    angle = int(payload.get("angle", 0))
+    if angle not in (0, 90, 180, 270):
+        raise HTTPException(status_code=400, detail="Angle must be 0, 90, 180, or 270")
+    
+    stream_state.rotation_angle = angle
+    print(f"🔄 [ORIENTATION] Angle set to {angle}°")
+
+    if stream_state.current_video_path and os.path.exists(stream_state.current_video_path):
+        # Force stop active stream so next play picks up new orientation immediately
+        stream_state.should_stop = True
+        await asyncio.sleep(0.05)
+        stream_state.should_stop = False
+        await run_in_threadpool(_probe_video_sync, stream_state.current_video_path, angle)
+
+    return {"status": "success", "rotation_angle": angle}
+
+
+def _process_stream_frame(pipeline, frame, frame_idx, speed_limit, total_frames, fps, rotation_angle):
+    if rotation_angle > 0:
+        frame = apply_rotation(frame, rotation_angle)
+
     h_f, w_f = frame.shape[:2]
     tracks, speed_records, new_violations = pipeline.process_frame(frame, frame_idx)
     speed_map = {rec.track_id: rec.speed_kmh for rec in speed_records}
 
-    # Draw Current Trigger Gate Line (Custom or Dot 3-4 Line)
+    # Draw Current Trigger Gate Line
     line_p1, line_p2 = pipeline.get_capture_line_endpoints(w_f, h_f)
-    cv2.line(frame, line_p1, line_p2, (255, 0, 127), 3)
-    cv2.putText(frame, "CAPTURE GATE", (max(10, line_p1[0]), max(20, line_p1[1] - 8)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 127), 2)
+    cv2.line(frame, line_p1, line_p2, (255, 0, 127), 3, cv2.LINE_AA)
+    cv2.putText(frame, "RADAR GATE", (max(10, line_p1[0]), max(25, line_p1[1] - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 0, 127), 2, cv2.LINE_AA)
 
     for trk in tracks:
         x1, y1, x2, y2 = map(int, trk.bbox)
@@ -221,32 +260,35 @@ def _process_stream_frame(pipeline, frame, frame_idx, speed_limit, total_frames,
         is_speeding = speed > speed_limit
         color = (0, 0, 255) if is_speeding else (0, 230, 118)
 
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        cv2.circle(frame, (int(trk.ground_point[0]), int(trk.ground_point[1])), 4, (0, 255, 255), -1)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2, cv2.LINE_AA)
+        cv2.circle(frame, (int(trk.ground_point[0]), int(trk.ground_point[1])), 4, (0, 255, 255), -1, cv2.LINE_AA)
 
         label = f"ID:{tid} | {speed:.1f} km/h"
         (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
-        cv2.rectangle(frame, (x1, y1 - 22), (x1 + text_w, y1), color, -1)
-        cv2.putText(frame, label, (x1, y1 - 6),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2)
+        cv2.rectangle(frame, (x1, max(0, y1 - 22)), (x1 + text_w, max(22, y1)), color, -1)
+        cv2.putText(frame, label, (x1, max(16, y1 - 6)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2, cv2.LINE_AA)
 
     s = frame_idx / fps
     m = int(s // 60)
     sec = s % 60
     time_str = f"{m:02d}:{sec:05.2f}"
     header_text = f"LIMIT: {speed_limit:.0f} km/h | {time_str} | F:{frame_idx}/{total_frames}"
-    cv2.rectangle(frame, (10, 10), (520, 38), (0, 0, 0), -1)
-    cv2.putText(frame, header_text, (18, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 229, 255), 2)
+    cv2.rectangle(frame, (10, 10), (min(w_f - 10, 480), 38), (0, 0, 0), -1)
+    cv2.putText(frame, header_text, (16, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 229, 255), 2, cv2.LINE_AA)
 
-    if w_f > 1280:
-        scale = 1280.0 / w_f
-        stream_frame = cv2.resize(frame, (1280, int(h_f * scale)), interpolation=cv2.INTER_LINEAR)
+    # Maintain strictly proportional aspect ratio regardless of portrait / landscape
+    max_dim = 960
+    if max(w_f, h_f) > max_dim:
+        scale = max_dim / float(max(w_f, h_f))
+        disp_w = int(w_f * scale)
+        disp_h = int(h_f * scale)
+        stream_frame = cv2.resize(frame, (disp_w, disp_h), interpolation=cv2.INTER_AREA)
     else:
         stream_frame = frame
 
-    _, buffer = cv2.imencode('.jpg', stream_frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+    _, buffer = cv2.imencode('.jpg', stream_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
     return buffer.tobytes(), new_violations
-
 
 @app.get("/api/stream/video")
 async def stream_video():
@@ -280,7 +322,8 @@ async def stream_video():
                     frame_idx,
                     speed_limit,
                     stream_state.total_frames,
-                    stream_state.fps
+                    stream_state.fps,
+                    stream_state.rotation_angle
                 )
 
                 for v in new_violations:
@@ -320,7 +363,7 @@ async def stream_video():
 @app.post("/api/stream/stop")
 async def stop_stream():
     stream_state.should_stop = True
-    return {"status": "success", "message": "Stream stop requested."}
+    return {"status": "success", "message": "Stream stopped."}
 
 
 @app.get("/api/calibration/reference-frame")
@@ -351,7 +394,6 @@ async def save_calibration(payload: dict = Body(...)):
         H = compute_homography(pixel_points, world_points)
         save_homography(H, CALIBRATION_PATH)
 
-        # Save points to JSON
         pts_data = {
             "calibration_points": pixel_points,
             "custom_gate_line": custom_gate_line
@@ -365,11 +407,11 @@ async def save_calibration(payload: dict = Body(...)):
 
         return {
             "status": "success",
-            "message": "Road calibration and gate updated and active.",
+            "message": "Road calibration updated.",
             "homography": H.tolist()
         }
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to calculate calibration: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Homography error: {str(e)}")
 
 
 @app.get("/api/calibration/current")
@@ -428,7 +470,7 @@ async def get_system_config():
 async def update_threshold(payload: dict = Body(...)):
     speed_kmh = payload.get("speed_kmh")
     if speed_kmh is None:
-        raise HTTPException(status_code=400, detail="Missing speed_kmh value")
+        raise HTTPException(status_code=400, detail="Missing speed_kmh")
 
     config = get_config()
     config.setdefault("thresholds", {})["speed_kmh"] = float(speed_kmh)
@@ -440,3 +482,8 @@ async def update_threshold(payload: dict = Body(...)):
         stream_state.pipeline.speed_threshold = float(speed_kmh)
 
     return {"status": "success", "speed_kmh": float(speed_kmh)}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)

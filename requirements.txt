@@ -1,29 +1,9 @@
-ultralytics>=8.3.0
-opencv-python
-onnxruntime-gpu
-fastapi
-uvicorn[standard]
-python-multipart
-pyyaml
-numpy
-torch
-torchvision
-hezar
-huggingface_hub
-websockets
-
-
-
-
-
-
-
-
-onnxruntime>=1.17.0
+onnxruntime-directml>=1.17.0; sys_platform == 'win32'
+onnxruntime>=1.17.0; sys_platform != 'win32'
 opencv-python>=4.8.0
-numpy>=1.24.0
+numpy>=1.24.0,<2.0.0
 fastapi>=0.100.0
 uvicorn[standard]>=0.22.0
-python-multipart
-pyyaml
-tqdm
+python-multipart>=0.0.6
+pyyaml>=6.0
+tqdm>=4.65.0

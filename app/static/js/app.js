@@ -1,645 +1,406 @@
-document.addEventListener("DOMContentLoaded", () => {
-    const API_BASE = "";
-    const WS_URL = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws/live`;
+/* ==========================================================================
+   Persian Speed ALPR & Radar Control - Robust Client Script
+   ========================================================================== */
 
-    // DOM Navigation
-    const navItems = document.querySelectorAll(".nav-item");
-    const tabPanes = document.querySelectorAll(".tab-pane");
+(() => {
+  'use strict';
 
-    // Metrics
-    const valTotalViolations = document.getElementById("valTotalViolations");
-    const valMaxSpeed = document.getElementById("valMaxSpeed");
-    const valAvgSpeed = document.getElementById("valAvgSpeed");
-    const valSpeedLimit = document.getElementById("valSpeedLimit");
+  const state = {
+    videoLoaded: false,
+    currentVideoFile: null,
+    isStreaming: false,
+    currentAngle: 0,
+    ws: null,
+    wsReconnectTimer: null,
+    calibImg: new Image(),
+    calibPoints: [],
+    activeDragIdx: -1,
+    scaleX: 1.0,
+    scaleY: 1.0
+  };
 
-    // Stream Controls
-    const videoFileInput = document.getElementById("videoFileInput");
-    const uploadBtnText = document.getElementById("uploadBtnText");
-    const uploadLabel = document.getElementById("uploadLabel");
-    const btnStartStream = document.getElementById("btnStartStream");
-    const btnStopStream = document.getElementById("btnStopStream");
-    const liveStreamImg = document.getElementById("liveStreamImg");
-    const streamPlaceholder = document.getElementById("streamPlaceholder");
-    const streamBadge = document.getElementById("streamBadge");
+  const PERSIAN_DIGITS = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+  const toPersianDigits = (str) => String(str).replace(/[0-9]/g, (d) => PERSIAN_DIGITS[parseInt(d, 10)]);
 
-    const thresholdRange = document.getElementById("thresholdRange");
-    const thresholdVal = document.getElementById("thresholdVal");
+  const dom = {
+    wsStatus: document.getElementById('wsStatus'),
+    statTotalViolations: document.getElementById('statTotalViolations'),
+    statMaxSpeed: document.getElementById('statMaxSpeed'),
+    statAvgSpeed: document.getElementById('statAvgSpeed'),
+    inputSpeedLimit: document.getElementById('inputSpeedLimit'),
+    btnSetLimit: document.getElementById('btnSetLimit'),
+    dropZone: document.getElementById('dropZone'),
+    videoFileInput: document.getElementById('videoFileInput'),
+    uploadProgressContainer: document.getElementById('uploadProgressContainer'),
+    uploadProgressBar: document.getElementById('uploadProgressBar'),
+    currentAngleBadge: document.getElementById('currentAngleBadge'),
+    anglePills: document.querySelectorAll('.angle-btn'),
+    liveStreamFeed: document.getElementById('liveStreamFeed'),
+    streamOverlayPlaceholder: document.getElementById('streamOverlayPlaceholder'),
+    videoMetaText: document.getElementById('videoMetaText'),
+    btnStartStream: document.getElementById('btnStartStream'),
+    btnStopStream: document.getElementById('btnStopStream'),
+    violationsList: document.getElementById('violationsList'),
+    emptyViolationsState: document.getElementById('emptyViolationsState'),
+    violationCountBadge: document.getElementById('violationCountBadge'),
+    btnOpenCalibration: document.getElementById('btnOpenCalibration'),
+    calibrationModal: document.getElementById('calibrationModal'),
+    btnCloseCalibration: document.getElementById('btnCloseCalibration'),
+    calibrationCanvas: document.getElementById('calibrationCanvas'),
+    calibRoadWidth: document.getElementById('calibRoadWidth'),
+    calibRoadLength: document.getElementById('calibRoadLength'),
+    btnResetCalibPoints: document.getElementById('btnResetCalibPoints'),
+    btnSaveCalibration: document.getElementById('btnSaveCalibration')
+  };
 
-    // Live Feed & History Grids
-    const liveViolationsGrid = document.getElementById("liveViolationsGrid");
-    const noViolationsMsg = document.getElementById("noViolationsMsg");
-    const historyViolationsGrid = document.getElementById("historyViolationsGrid");
-    const violationsTableBody = document.getElementById("violationsTableBody");
-    const tableFilter = document.getElementById("tableFilter");
+  document.addEventListener('DOMContentLoaded', () => {
+    initWebSocket();
+    initUploadListeners();
+    initRotationControls();
+    initStreamControls();
+    initCalibrationCanvas();
+    fetchStats();
+    fetchViolations();
+    fetchConfig();
+  });
 
-    // Status
-    const wsStatusDot = document.getElementById("wsStatusDot");
-    const wsStatusText = document.getElementById("wsStatusText");
+  function initWebSocket() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/live`;
 
-    // Calibration Elements
-    const calibrationCanvas = document.getElementById("calibrationCanvas");
-    const ctx = calibrationCanvas.getContext("2d");
-    const canvasHint = document.getElementById("canvasHint");
-    const btnModeRoad = document.getElementById("btnModeRoad");
-    const btnModeLine = document.getElementById("btnModeLine");
-    const roadSection = document.getElementById("roadSection");
-    const lineSection = document.getElementById("lineSection");
-    const btnResetLine = document.getElementById("btnResetLine");
-    const btnResetPoints = document.getElementById("btnResetPoints");
-    const btnSaveCalibration = document.getElementById("btnSaveCalibration");
-    const roadWidthInput = document.getElementById("roadWidthInput");
-    const roadLengthInput = document.getElementById("roadLengthInput");
-    const gateStatusText = document.getElementById("gateStatusText");
-
-    const ptBadges = [
-        document.getElementById("ptBadge1"),
-        document.getElementById("ptBadge2"),
-        document.getElementById("ptBadge3"),
-        document.getElementById("ptBadge4")
-    ];
-
-    const lineBadge1 = document.getElementById("lineBadge1");
-    const lineBadge2 = document.getElementById("lineBadge2");
-
-    // Modal
-    const imageModal = document.getElementById("imageModal");
-    const modalClose = document.getElementById("modalClose");
-    const modalVehImage = document.getElementById("modalVehImage");
-    const modalPlateImage = document.getElementById("modalPlateImage");
-    const modalInfo = document.getElementById("modalInfo");
-
-    // State
-    let clickMode = "road"; // "road" or "line"
-    let calibrationPoints = []; // 4 points [[x, y], ...]
-    let customGatePoints = [];  // 2 points [[x, y], [x, y]] (optional)
-    let refImage = new Image();
-    let isRefImageLoaded = false;
-    let ws = null;
-    let allViolationsCache = [];
-
-    // ---------------- TAB NAVIGATION ----------------
-    function switchTab(tabId) {
-        navItems.forEach(n => n.classList.remove("active"));
-        tabPanes.forEach(p => p.classList.remove("active"));
-
-        const targetBtn = Array.from(navItems).find(n => n.getAttribute("data-tab") === tabId);
-        const targetPane = document.getElementById(tabId);
-
-        if (targetBtn) targetBtn.classList.add("active");
-        if (targetPane) targetPane.classList.add("active");
-
-        if (tabId === "calibration-tab") {
-            loadReferenceFrame();
-            loadCurrentCalibrationData();
-        } else if (tabId === "history-tab") {
-            fetchViolations();
-        }
+    if (state.ws) {
+      try { state.ws.close(); } catch (_) {}
     }
 
-    navItems.forEach(item => {
-        item.addEventListener("click", () => {
-            switchTab(item.getAttribute("data-tab"));
-        });
-    });
-
-    // ---------------- WEBSOCKET ----------------
-    function setupWebSocket() {
-        try {
-            ws = new WebSocket(WS_URL);
-
-            ws.onopen = () => {
-                if (wsStatusDot) wsStatusDot.className = "status-indicator online";
-                if (wsStatusText) wsStatusText.textContent = "Live Connected";
-            };
-
-            ws.onmessage = (event) => {
-                try {
-                    const message = JSON.parse(event.data);
-                    if (message.type === "NEW_VIOLATION") {
-                        handleNewViolation(message.data);
-                    }
-                } catch (err) {
-                    console.error("WS parse error:", err);
-                }
-            };
-
-            ws.onclose = () => {
-                if (wsStatusDot) wsStatusDot.className = "status-indicator offline";
-                if (wsStatusText) wsStatusText.textContent = "Disconnected (Retrying)";
-                setTimeout(setupWebSocket, 3000);
-            };
-
-            ws.onerror = () => {
-                if (ws) ws.close();
-            };
-        } catch (e) {
-            console.error("WebSocket setup error:", e);
-        }
-    }
-
-    // ---------------- VIDEO UPLOAD (DIRECT & PROGRESS) ----------------
-    if (videoFileInput) {
-        videoFileInput.addEventListener("change", function () {
-            if (!this.files || this.files.length === 0) return;
-
-            const file = this.files[0];
-            const fileSizeMB = (file.size / (1024 * 1024)).toFixed(1);
-
-            uploadLabel.style.pointerEvents = "none";
-            if (uploadBtnText) uploadBtnText.textContent = `Uploading: 0% (${fileSizeMB} MB)...`;
-
-            const formData = new FormData();
-            formData.append("file", file);
-
-            const xhr = new XMLHttpRequest();
-            xhr.open("POST", `${API_BASE}/api/upload`, true);
-            xhr.timeout = 900000;
-
-            xhr.upload.onprogress = (event) => {
-                if (event.lengthComputable) {
-                    const percent = Math.round((event.loaded / event.total) * 100);
-                    const loadedMB = (event.loaded / (1024 * 1024)).toFixed(1);
-                    if (uploadBtnText) uploadBtnText.textContent = `⏳ ${percent}% (${loadedMB}/${fileSizeMB} MB)`;
-                }
-            };
-
-            xhr.onload = () => {
-                uploadLabel.style.pointerEvents = "auto";
-                if (uploadBtnText) uploadBtnText.textContent = "Upload Video";
-
-                if (xhr.status === 200) {
-                    try {
-                        const data = JSON.parse(xhr.responseText);
-                        alert(`✅ Video Uploaded Successfully!\n\nFile: ${data.filename}\nFPS: ${data.fps} | Frames: ${data.total_frames}\n\nYou can now adjust road dots and trigger lines in Road Calibration, or click 'Start Live Stream'.`);
-                        btnStartStream.disabled = false;
-                        btnStartStream.classList.add("btn-primary");
-                    } catch (err) {
-                        alert("Uploaded, but server returned invalid response format.");
-                    }
-                } else {
-                    alert(`❌ Upload failed with status ${xhr.status}: ${xhr.statusText}`);
-                }
-            };
-
-            xhr.onerror = () => {
-                uploadLabel.style.pointerEvents = "auto";
-                if (uploadBtnText) uploadBtnText.textContent = "Upload Video";
-                alert("❌ Upload failed due to a network connection error.");
-            };
-
-            xhr.ontimeout = () => {
-                uploadLabel.style.pointerEvents = "auto";
-                if (uploadBtnText) uploadBtnText.textContent = "Upload Video";
-                alert("❌ Upload timed out.");
-            };
-
-            xhr.send(formData);
-        });
-    }
-
-    // ---------------- STREAM CONTROLS ----------------
-    btnStartStream.addEventListener("click", () => {
-        streamPlaceholder.classList.add("hidden");
-        liveStreamImg.classList.remove("hidden");
-
-        const streamUrl = `${API_BASE}/api/stream/video?t=${Date.now()}`;
-        liveStreamImg.src = streamUrl;
-
-        streamBadge.textContent = "Streaming Live";
-        streamBadge.className = "badge badge-alert";
-
-        btnStartStream.disabled = true;
-        btnStopStream.disabled = false;
-    });
-
-    btnStopStream.addEventListener("click", async () => {
-        try {
-            await fetch(`${API_BASE}/api/stream/stop`, { method: "POST" });
-        } catch (e) {}
-
-        liveStreamImg.src = "";
-        liveStreamImg.classList.add("hidden");
-        streamPlaceholder.classList.remove("hidden");
-        streamBadge.textContent = "Stream Stopped";
-        streamBadge.className = "badge";
-
-        btnStartStream.disabled = false;
-        btnStopStream.disabled = true;
-
-        fetchStats();
-        fetchViolations();
-    });
-
-    // ---------------- ROAD CALIBRATION & DYNAMIC GATE ----------------
-    btnModeRoad.addEventListener("click", () => {
-        clickMode = "road";
-        btnModeRoad.className = "btn btn-sm btn-primary";
-        btnModeLine.className = "btn btn-sm btn-secondary";
-        roadSection.classList.remove("hidden");
-        lineSection.classList.add("hidden");
-    });
-
-    btnModeLine.addEventListener("click", () => {
-        clickMode = "line";
-        btnModeLine.className = "btn btn-sm btn-primary";
-        btnModeRoad.className = "btn btn-sm btn-secondary";
-        lineSection.classList.remove("hidden");
-        roadSection.classList.add("hidden");
-    });
-
-    btnResetLine.addEventListener("click", () => {
-        customGatePoints = [];
-        updateGateStatus();
-        renderCalibrationCanvas();
-    });
-
-    function loadReferenceFrame() {
-        refImage = new Image();
-        refImage.src = `${API_BASE}/api/calibration/reference-frame?t=${Date.now()}`;
-        refImage.onload = () => {
-            isRefImageLoaded = true;
-            if (canvasHint) canvasHint.classList.add("hidden");
-            renderCalibrationCanvas();
-        };
-        refImage.onerror = () => {
-            if (canvasHint) {
-                canvasHint.classList.remove("hidden");
-                canvasHint.textContent = "Upload a video in Live Operations tab to load the reference road frame.";
-            }
-        };
-    }
-
-    async function loadCurrentCalibrationData() {
-        try {
-            const res = await fetch(`${API_BASE}/api/calibration/current`);
-            if (res.ok) {
-                const data = await res.json();
-                if (data.calibration_points && data.calibration_points.length === 4) {
-                    calibrationPoints = data.calibration_points.map(p => ({ x: p[0], y: p[1] }));
-                }
-                if (data.custom_gate_line && data.custom_gate_line.length === 2) {
-                    customGatePoints = data.custom_gate_line.map(p => ({ x: p[0], y: p[1] }));
-                }
-                updateGateStatus();
-                updatePointBadges();
-                renderCalibrationCanvas();
-            }
-        } catch (e) {}
-    }
-
-    function renderCalibrationCanvas() {
-        if (!isRefImageLoaded) return;
-
-        calibrationCanvas.width = refImage.naturalWidth || 1280;
-        calibrationCanvas.height = refImage.naturalHeight || 720;
-
-        ctx.clearRect(0, 0, calibrationCanvas.width, calibrationCanvas.height);
-        ctx.drawImage(refImage, 0, 0, calibrationCanvas.width, calibrationCanvas.height);
-
-        // 1. Draw Road Polygon
-        if (calibrationPoints.length > 1) {
-            ctx.beginPath();
-            ctx.moveTo(calibrationPoints[0].x, calibrationPoints[0].y);
-            for (let i = 1; i < calibrationPoints.length; i++) {
-                ctx.lineTo(calibrationPoints[i].x, calibrationPoints[i].y);
-            }
-            if (calibrationPoints.length === 4) {
-                ctx.closePath();
-                ctx.fillStyle = "rgba(0, 229, 255, 0.20)";
-                ctx.fill();
-            }
-            ctx.strokeStyle = "#00e5ff";
-            ctx.lineWidth = 3;
-            ctx.stroke();
-        }
-
-        // Draw Road Points P1..P4
-        const pointLabels = ["P1 (Top-L)", "P2 (Top-R)", "P3 (Bot-R)", "P4 (Bot-L)"];
-        calibrationPoints.forEach((pt, idx) => {
-            ctx.beginPath();
-            ctx.arc(pt.x, pt.y, 8, 0, 2 * Math.PI);
-            ctx.fillStyle = "#ff1744";
-            ctx.fill();
-            ctx.strokeStyle = "#ffffff";
-            ctx.lineWidth = 2.5;
-            ctx.stroke();
-
-            ctx.fillStyle = "#00e5ff";
-            ctx.font = "bold 15px 'JetBrains Mono', monospace";
-            ctx.fillText(pointLabels[idx], pt.x + 12, pt.y - 8);
-        });
-
-        // 2. Draw Trigger Gate Line (Magenta)
-        if (customGatePoints.length === 2) {
-            // Draw Custom Line
-            ctx.beginPath();
-            ctx.moveTo(customGatePoints[0].x, customGatePoints[0].y);
-            ctx.lineTo(customGatePoints[1].x, customGatePoints[1].y);
-            ctx.strokeStyle = "#ff007f";
-            ctx.lineWidth = 4;
-            ctx.stroke();
-
-            customGatePoints.forEach((pt, idx) => {
-                ctx.beginPath();
-                ctx.arc(pt.x, pt.y, 8, 0, 2 * Math.PI);
-                ctx.fillStyle = "#ff007f";
-                ctx.fill();
-                ctx.strokeStyle = "#fff";
-                ctx.lineWidth = 2;
-                ctx.stroke();
-            });
-
-            ctx.fillStyle = "#ff007f";
-            ctx.font = "bold 16px 'JetBrains Mono', monospace";
-            ctx.fillText("CUSTOM TRIGGER GATE", customGatePoints[0].x + 15, customGatePoints[0].y - 12);
-
-        } else if (calibrationPoints.length === 4) {
-            // Default: Line between Dot 3 (P3) and Dot 4 (P4)
-            const p3 = calibrationPoints[2];
-            const p4 = calibrationPoints[3];
-            ctx.beginPath();
-            ctx.moveTo(p4.x, p4.y);
-            ctx.lineTo(p3.x, p3.y);
-            ctx.strokeStyle = "#ff007f";
-            ctx.lineWidth = 4;
-            ctx.stroke();
-
-            ctx.fillStyle = "#ff007f";
-            ctx.font = "bold 16px 'JetBrains Mono', monospace";
-            const midX = (p4.x + p3.x) / 2;
-            const midY = (p4.y + p3.y) / 2;
-            ctx.fillText("DEFAULT TRIGGER GATE (P3-P4)", midX - 120, midY + 25);
-        }
-
-        updatePointBadges();
-    }
-
-    calibrationCanvas.addEventListener("click", (e) => {
-        if (!isRefImageLoaded) return;
-
-        const rect = calibrationCanvas.getBoundingClientRect();
-        const scaleX = calibrationCanvas.width / rect.width;
-        const scaleY = calibrationCanvas.height / rect.height;
-
-        const x = Math.round((e.clientX - rect.left) * scaleX);
-        const y = Math.round((e.clientY - rect.top) * scaleY);
-
-        if (clickMode === "road") {
-            if (calibrationPoints.length >= 4) {
-                alert("All 4 road points are placed! Click 'Reset All Spots' if you wish to replot.");
-                return;
-            }
-            calibrationPoints.push({ x, y });
-        } else if (clickMode === "line") {
-            if (customGatePoints.length >= 2) {
-                customGatePoints = [];
-            }
-            customGatePoints.push({ x, y });
-        }
-
-        updateGateStatus();
-        renderCalibrationCanvas();
-    });
-
-    btnResetPoints.addEventListener("click", () => {
-        calibrationPoints = [];
-        customGatePoints = [];
-        updateGateStatus();
-        renderCalibrationCanvas();
-    });
-
-    function updateGateStatus() {
-        if (customGatePoints.length === 2) {
-            gateStatusText.textContent = `Custom Line [(${customGatePoints[0].x}, ${customGatePoints[0].y}) → (${customGatePoints[1].x}, ${customGatePoints[1].y})]`;
-            gateStatusText.style.color = "#00e5ff";
-        } else if (calibrationPoints.length === 4) {
-            gateStatusText.textContent = `Default Line between Dot 3 (P3) and Dot 4 (P4)`;
-            gateStatusText.style.color = "#ff4081";
-        } else {
-            gateStatusText.textContent = "Unset (Set 4 road spots or custom line)";
-            gateStatusText.style.color = "#8a99ad";
-        }
-    }
-
-    function updatePointBadges() {
-        const defaultNames = ["P1: Top-Left", "P2: Top-Right", "P3: Bottom-Right", "P4: Bottom-Left"];
-        ptBadges.forEach((badge, idx) => {
-            if (idx < calibrationPoints.length) {
-                const pt = calibrationPoints[idx];
-                badge.className = "point-badge set";
-                badge.textContent = `${defaultNames[idx]} (${pt.x}, ${pt.y})`;
-            } else {
-                badge.className = "point-badge";
-                badge.textContent = `${defaultNames[idx]} (Unset)`;
-            }
-        });
-
-        if (customGatePoints.length >= 1) {
-            lineBadge1.className = "point-badge set";
-            lineBadge1.textContent = `Pt 1: (${customGatePoints[0].x}, ${customGatePoints[0].y})`;
-        } else {
-            lineBadge1.className = "point-badge";
-            lineBadge1.textContent = "Line Pt 1: (Unset)";
-        }
-
-        if (customGatePoints.length === 2) {
-            lineBadge2.className = "point-badge set";
-            lineBadge2.textContent = `Pt 2: (${customGatePoints[1].x}, ${customGatePoints[1].y})`;
-        } else {
-            lineBadge2.className = "point-badge";
-            lineBadge2.textContent = "Line Pt 2: (Unset)";
-        }
-    }
-
-    btnSaveCalibration.addEventListener("click", async () => {
-        if (calibrationPoints.length !== 4) {
-            alert("⚠️ Please plot all 4 spots on the road surface first:\n1. Top-Left\n2. Top-Right\n3. Bottom-Right\n4. Bottom-Left");
-            return;
-        }
-
-        const roadWidth = parseFloat(roadWidthInput.value);
-        const roadLength = parseFloat(roadLengthInput.value);
-
-        const payload = {
-            pixel_points: calibrationPoints.map(p => [p.x, p.y]),
-            road_width_m: roadWidth,
-            road_length_m: roadLength,
-            custom_gate_line: customGatePoints.length === 2 ? customGatePoints.map(p => [p.x, p.y]) : null
-        };
-
-        try {
-            const res = await fetch(`${API_BASE}/api/calibration/save`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload)
-            });
-            const data = await res.json();
-            if (res.ok) {
-                alert("🎉 Road Calibration & Gate Line Saved! Return to 'Live Operations' and start stream.");
-                switchTab("live-tab");
-            } else {
-                alert("Calibration error: " + data.detail);
-            }
-        } catch (err) {
-            alert("Failed to save calibration: " + err.message);
-        }
-    });
-
-    // ---------------- REUSABLE VIOLATION CARD TEMPLATE ----------------
-    function createViolationCardHTML(v) {
-        const delta = (v.speed_kmh - (v.speed_limit || 60)).toFixed(1);
-        return `
-            <div class="violation-card">
-                <div class="vcard-header">
-                    <span class="vcard-tag">TRACK ID #${v.track_id}</span>
-                    <span class="vcard-speed">${v.speed_kmh.toFixed(1)} <small>km/h (+${delta})</small></span>
-                </div>
-                <div class="vcard-crops">
-                    <div class="vcard-crop-box">
-                        <label>Vehicle Snapshot</label>
-                        <img src="${v.vehicle_image_url || '/' + v.vehicle_image_path}" alt="Vehicle" onerror="this.src='/static/placeholder.png'">
-                    </div>
-                    <div class="vcard-crop-box">
-                        <label>License Plate</label>
-                        <img src="${v.plate_image_url || '/' + v.plate_image_path}" alt="Plate" onerror="this.src='/static/placeholder.png'">
-                    </div>
-                </div>
-                <div class="vcard-body">
-                    <div class="vcard-plate-box">
-                        <span class="plate-badge-styled">${v.plate_text || 'UNKNOWN'}</span>
-                        <span class="ocr-conf-tag">OCR: ${((v.ocr_confidence || 0) * 100).toFixed(0)}%</span>
-                    </div>
-                    <div class="vcard-footer">
-                        <span>Time: <strong class="vcard-time">${v.video_time || '00:00.00'}</strong></span>
-                        <button class="btn btn-secondary btn-sm" onclick="openInspectionModal('${v.vehicle_image_url || '/' + v.vehicle_image_path}', '${v.plate_image_url || '/' + v.plate_image_path}', '${v.plate_text}', ${v.speed_kmh}, '${v.video_time}', '${v.timestamp}')">
-                            Inspect
-                        </button>
-                    </div>
-                </div>
-            </div>
-        `;
-    }
-
-    function handleNewViolation(v) {
-        if (noViolationsMsg) noViolationsMsg.style.display = "none";
-
-        // Prepend to Live Feed Grid on Tab 1
-        const tempDiv = document.createElement("div");
-        tempDiv.innerHTML = createViolationCardHTML(v);
-        liveViolationsGrid.prepend(tempDiv.firstElementChild);
-
-        fetchStats();
-    }
-
-    // ---------------- STATS & HISTORY ----------------
-    async function fetchStats() {
-        try {
-            const res = await fetch(`${API_BASE}/api/stats`);
-            const data = await res.json();
-            valTotalViolations.textContent = data.total_violations || 0;
-            valMaxSpeed.innerHTML = `${data.max_speed || 0} <small>km/h</small>`;
-            valAvgSpeed.innerHTML = `${data.avg_speed || 0} <small>km/h</small>`;
-        } catch (err) {}
-    }
-
-    async function fetchConfig() {
-        try {
-            const res = await fetch(`${API_BASE}/api/config`);
-            const data = await res.json();
-            const spd = data.thresholds?.speed_kmh || 60;
-            thresholdRange.value = spd;
-            thresholdVal.textContent = spd;
-            valSpeedLimit.textContent = spd;
-        } catch (err) {}
-    }
-
-    thresholdRange.addEventListener("input", (e) => {
-        thresholdVal.textContent = e.target.value;
-        valSpeedLimit.textContent = e.target.value;
-    });
-
-    thresholdRange.addEventListener("change", async (e) => {
-        await fetch(`${API_BASE}/api/config/threshold`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ speed_kmh: parseFloat(e.target.value) })
-        });
-    });
-
-    async function fetchViolations() {
-        try {
-            const res = await fetch(`${API_BASE}/api/violations?limit=100`);
-            const data = await res.json();
-            allViolationsCache = data.violations || [];
-            renderViolationsHistory(allViolationsCache);
-        } catch (err) {}
-    }
-
-    function renderViolationsHistory(violations) {
-        if (historyViolationsGrid) {
-            if (violations.length === 0) {
-                historyViolationsGrid.innerHTML = `<div class="no-violations-msg"><p>No violations recorded in database yet.</p></div>`;
-            } else {
-                historyViolationsGrid.innerHTML = violations.map(v => createViolationCardHTML(v)).join('');
-            }
-        }
-
-        if (violationsTableBody) {
-            if (violations.length === 0) {
-                violationsTableBody.innerHTML = `<tr><td colspan="9" class="empty-row">No violations recorded yet.</td></tr>`;
-            } else {
-                violationsTableBody.innerHTML = violations.map(v => `
-                    <tr>
-                        <td>#${v.id}</td>
-                        <td><strong>Track ${v.track_id}</strong></td>
-                        <td><img src="/${v.vehicle_image_path}" class="tbl-crop-img" alt="Veh"></td>
-                        <td><img src="/${v.plate_image_path}" class="tbl-crop-img" alt="Plate"></td>
-                        <td><span class="plate-badge-styled">${v.plate_text || 'UNKNOWN'}</span></td>
-                        <td><span style="color: var(--danger); font-weight: 700;">${v.speed_kmh.toFixed(1)} km/h</span></td>
-                        <td><span style="color: var(--primary); font-weight: 600;">${v.video_time || '00:00.00'}</span></td>
-                        <td>${((v.ocr_confidence || 0) * 100).toFixed(0)}%</td>
-                        <td>${v.timestamp}</td>
-                    </tr>
-                `).join('');
-            }
-        }
-    }
-
-    if (tableFilter) {
-        tableFilter.addEventListener("input", (e) => {
-            const q = e.target.value.toLowerCase();
-            const filtered = allViolationsCache.filter(v =>
-                (v.plate_text && v.plate_text.toLowerCase().includes(q)) ||
-                String(v.track_id).includes(q)
-            );
-            renderViolationsHistory(filtered);
-        });
-    }
-
-    window.openInspectionModal = function (vehUrl, plateUrl, plateText, speed, videoTime, timestamp) {
-        modalVehImage.src = vehUrl.replace(/\\/g, "/");
-        modalPlateImage.src = plateUrl.replace(/\\/g, "/");
-        modalInfo.innerHTML = `
-            <div><strong>Plate Text:</strong> <span class="plate-badge-styled">${plateText || 'UNKNOWN'}</span></div>
-            <div><strong>Recorded Speed:</strong> <span style="color: var(--danger); font-weight: 700;">${speed.toFixed(1)} km/h</span></div>
-            <div><strong>Video Timestamp:</strong> <span style="color: var(--primary);">${videoTime}</span></div>
-            <div><strong>System Date:</strong> ${timestamp}</div>
-        `;
-        imageModal.classList.remove("hidden");
+    state.ws = new WebSocket(wsUrl);
+
+    state.ws.onopen = () => {
+      if (dom.wsStatus) {
+        dom.wsStatus.className = 'connection-status connected';
+        dom.wsStatus.querySelector('.status-text').textContent = 'Live GPU Online';
+      }
+      if (state.wsReconnectTimer) {
+        clearInterval(state.wsReconnectTimer);
+        state.wsReconnectTimer = null;
+      }
     };
 
-    modalClose.addEventListener("click", () => imageModal.classList.add("hidden"));
-    imageModal.addEventListener("click", (e) => {
-        if (e.target === imageModal) imageModal.classList.add("hidden");
+    state.ws.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data);
+        if (payload.type === 'NEW_VIOLATION') {
+          handleIncomingViolation(payload.data);
+          fetchStats();
+        }
+      } catch (err) {
+        console.error(err);
+      }
+    };
+
+    state.ws.onclose = () => {
+      if (dom.wsStatus) {
+        dom.wsStatus.className = 'connection-status disconnected';
+        dom.wsStatus.querySelector('.status-text').textContent = 'Disconnected';
+      }
+      if (!state.wsReconnectTimer) {
+        state.wsReconnectTimer = setInterval(initWebSocket, 4000);
+      }
+    };
+  }
+
+  function initUploadListeners() {
+    const { dropZone, videoFileInput } = dom;
+    if (!dropZone || !videoFileInput) return;
+
+    ['dragenter', 'dragover'].forEach(name => {
+      dropZone.addEventListener(name, (e) => {
+        e.preventDefault();
+        dropZone.style.borderColor = 'var(--accent)';
+      });
     });
 
-    document.getElementById("btnRefreshStats").addEventListener("click", () => {
-        fetchStats();
-        fetchViolations();
+    ['dragleave', 'drop'].forEach(name => {
+      dropZone.addEventListener(name, (e) => {
+        e.preventDefault();
+        dropZone.style.borderColor = 'var(--border)';
+      });
     });
 
-    setupWebSocket();
-    fetchStats();
-    fetchConfig();
-    fetchViolations();
-});
+    dropZone.addEventListener('drop', (e) => {
+      if (e.dataTransfer.files.length > 0) uploadVideo(e.dataTransfer.files[0]);
+    });
+
+    videoFileInput.addEventListener('change', (e) => {
+      if (e.target.files.length > 0) uploadVideo(e.target.files[0]);
+    });
+  }
+
+  function uploadVideo(file) {
+    if (!file) return;
+
+    const fd = new FormData();
+    fd.append('file', file);
+
+    dom.uploadProgressContainer.style.display = 'block';
+    dom.uploadProgressBar.style.width = '0%';
+    dom.videoMetaText.textContent = `Uploading ${file.name}...`;
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/upload', true);
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        dom.uploadProgressBar.style.width = `${Math.round((e.loaded / e.total) * 100)}%`;
+      }
+    };
+
+    xhr.onload = () => {
+      dom.uploadProgressContainer.style.display = 'none';
+      if (xhr.status >= 200 && xhr.status < 300) {
+        const resp = JSON.parse(xhr.responseText);
+        state.videoLoaded = true;
+        state.currentVideoFile = resp.filename;
+        dom.videoMetaText.textContent = `${resp.filename} | ${resp.fps} FPS`;
+        dom.btnStartStream.disabled = false;
+        
+        // Show initial frame
+        dom.streamOverlayPlaceholder.style.display = 'none';
+        dom.liveStreamFeed.src = `/api/calibration/reference-frame?t=${Date.now()}`;
+        loadCalibrationReference();
+      } else {
+        alert('Upload failed: ' + xhr.status);
+      }
+    };
+
+    xhr.send(fd);
+  }
+
+  function initRotationControls() {
+    dom.anglePills.forEach(pill => {
+      pill.addEventListener('click', async () => {
+        const angle = parseInt(pill.getAttribute('data-angle'), 10);
+        state.currentAngle = angle;
+
+        dom.anglePills.forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        if (dom.currentAngleBadge) dom.currentAngleBadge.textContent = `${angle}°`;
+
+        try {
+          await fetch('/api/video/rotate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ angle: angle })
+          });
+
+          const bust = Date.now();
+          if (state.isStreaming) {
+            // Re-point live stream to reload immediately with new rotation
+            dom.liveStreamFeed.src = `/api/stream/video?t=${bust}`;
+          } else if (state.videoLoaded) {
+            // If idle, refresh reference frame preview
+            dom.liveStreamFeed.src = `/api/calibration/reference-frame?t=${bust}`;
+          }
+          loadCalibrationReference();
+        } catch (err) {
+          console.error(err);
+        }
+      });
+    });
+  }
+
+  function initStreamControls() {
+    dom.btnStartStream.addEventListener('click', () => {
+      if (!state.videoLoaded) return;
+      state.isStreaming = true;
+      dom.btnStartStream.disabled = true;
+      dom.btnStopStream.disabled = false;
+      dom.streamOverlayPlaceholder.style.display = 'none';
+      dom.liveStreamFeed.src = `/api/stream/video?t=${Date.now()}`;
+    });
+
+    dom.btnStopStream.addEventListener('click', async () => {
+      try {
+        await fetch('/api/stream/stop', { method: 'POST' });
+      } catch (_) {}
+      state.isStreaming = false;
+      dom.btnStartStream.disabled = false;
+      dom.btnStopStream.disabled = true;
+      dom.liveStreamFeed.src = `/api/calibration/reference-frame?t=${Date.now()}`;
+    });
+
+    dom.btnSetLimit.addEventListener('click', async () => {
+      const val = parseFloat(dom.inputSpeedLimit.value);
+      if (val > 0) {
+        await fetch('/api/config/threshold', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ speed_kmh: val })
+        });
+      }
+    });
+  }
+
+  function parsePlate(raw) {
+    if (!raw || raw === 'UNKNOWN') return { p1: '---', l: '?', p2: '---', pr: '--' };
+    const m = raw.trim().match(/^(\d{2})\s*([^\d\s]+)\s*(\d{3})\s*[-_]?\s*(\d{2})$/);
+    if (m) return { p1: toPersianDigits(m[1]), l: m[2], p2: toPersianDigits(m[3]), pr: toPersianDigits(m[4]) };
+    return { p1: toPersianDigits(raw), l: '', p2: '', pr: 'ایران' };
+  }
+
+  function handleIncomingViolation(v) {
+    if (dom.emptyViolationsState) dom.emptyViolationsState.style.display = 'none';
+
+    const p = parsePlate(v.plate_text);
+    const card = document.createElement('div');
+    card.className = 'violation-card-item';
+    card.innerHTML = `
+      <div class="violation-card-top">
+        <div class="v-veh-crop-wrap">
+          <img src="${v.vehicle_image_url || ''}" class="v-crop-veh" onerror="this.style.display='none';">
+        </div>
+        <div class="v-plate-info">
+          <div class="plate-box-iranian" dir="rtl">
+            <div class="plate-blue-strip"><span>IRAN</span></div>
+            <div class="plate-main-text">
+              <span>${p.p1}</span>
+              <span class="plate-letter">${p.l}</span>
+              <span>${p.p2}</span>
+            </div>
+            <div class="plate-province-zone"><span>${p.pr}</span></div>
+          </div>
+          <div class="v-crop-plate-wrap">
+            <img src="${v.plate_image_url || ''}" class="v-crop-plate" onerror="this.style.display='none';">
+          </div>
+        </div>
+      </div>
+      <div class="violation-card-meta">
+        <div class="meta-item"><span class="meta-lbl">SPEED</span><span class="meta-val text-red">${parseFloat(v.speed_kmh).toFixed(1)} km/h</span></div>
+        <div class="meta-item"><span class="meta-lbl">LIMIT</span><span class="meta-val">${parseFloat(v.speed_limit || 60).toFixed(0)} km/h</span></div>
+        <div class="meta-item"><span class="meta-lbl">TIME</span><span class="meta-val">${v.video_time || '--:--'}</span></div>
+        <div class="meta-item"><span class="meta-lbl">ACC</span><span class="meta-val">${Math.round((v.ocr_confidence || 0) * 100)}%</span></div>
+      </div>
+    `;
+    dom.violationsList.insertBefore(card, dom.violationsList.firstChild);
+  }
+
+  async function fetchViolations() {
+    try {
+      const res = await fetch('/api/violations?limit=50');
+      const data = await res.json();
+      const list = data.violations || [];
+      dom.violationsList.innerHTML = '';
+      if (list.length === 0) {
+        if (dom.emptyViolationsState) {
+          dom.violationsList.appendChild(dom.emptyViolationsState);
+          dom.emptyViolationsState.style.display = 'block';
+        }
+        return;
+      }
+      if (dom.violationCountBadge) dom.violationCountBadge.textContent = list.length;
+      list.slice().reverse().forEach(handleIncomingViolation);
+    } catch (_) {}
+  }
+
+  async function fetchStats() {
+    try {
+      const res = await fetch('/api/stats');
+      const stats = await res.json();
+      dom.statTotalViolations.textContent = stats.total_violations || 0;
+      dom.statMaxSpeed.innerHTML = `${(stats.max_speed || 0).toFixed(1)} <small>km/h</small>`;
+      dom.statAvgSpeed.innerHTML = `${(stats.avg_speed || 0).toFixed(1)} <small>km/h</small>`;
+    } catch (_) {}
+  }
+
+  async function fetchConfig() {
+    try {
+      const res = await fetch('/api/config');
+      const conf = await res.json();
+      if (conf.thresholds?.speed_kmh) dom.inputSpeedLimit.value = conf.thresholds.speed_kmh;
+    } catch (_) {}
+  }
+
+  function initCalibrationCanvas() {
+    const { btnOpenCalibration, btnCloseCalibration, calibrationModal, calibrationCanvas } = dom;
+
+    btnOpenCalibration.addEventListener('click', () => {
+      calibrationModal.style.display = 'flex';
+      loadCalibrationReference();
+    });
+
+    btnCloseCalibration.addEventListener('click', () => {
+      calibrationModal.style.display = 'none';
+    });
+
+    dom.btnResetCalibPoints.addEventListener('click', () => {
+      state.calibPoints = [];
+      drawCanvas();
+    });
+
+    dom.btnSaveCalibration.addEventListener('click', async () => {
+      if (state.calibPoints.length !== 4) return alert('Select 4 points');
+      const pts = state.calibPoints.map(p => [Math.round(p.x / state.scaleX), Math.round(p.y / state.scaleY)]);
+      await fetch('/api/calibration/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pixel_points: pts,
+          custom_gate_line: [pts[3], pts[2]],
+          road_width_m: parseFloat(dom.calibRoadWidth.value) || 3.5,
+          road_length_m: parseFloat(dom.calibRoadLength.value) || 20.0
+        })
+      });
+      calibrationModal.style.display = 'none';
+    });
+
+    calibrationCanvas.addEventListener('mousedown', (e) => {
+      const rect = calibrationCanvas.getBoundingClientRect();
+      const pos = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+      if (state.calibPoints.length < 4) {
+        state.calibPoints.push(pos);
+        drawCanvas();
+      }
+    });
+  }
+
+  function loadCalibrationReference() {
+    state.calibImg.src = `/api/calibration/reference-frame?t=${Date.now()}`;
+    state.calibImg.onload = () => {
+      const canvas = dom.calibrationCanvas;
+      const wrap = canvas.parentElement;
+      canvas.width = wrap.clientWidth || 600;
+      canvas.height = (canvas.width * state.calibImg.height) / state.calibImg.width;
+      state.scaleX = canvas.width / state.calibImg.width;
+      state.scaleY = canvas.height / state.calibImg.height;
+      drawCanvas();
+    };
+  }
+
+  function drawCanvas() {
+    const ctx = dom.calibrationCanvas.getContext('2d');
+    ctx.clearRect(0, 0, dom.calibrationCanvas.width, dom.calibrationCanvas.height);
+    if (state.calibImg.complete) ctx.drawImage(state.calibImg, 0, 0, dom.calibrationCanvas.width, dom.calibrationCanvas.height);
+
+    const pts = state.calibPoints;
+    if (pts.length >= 2) {
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      if (pts.length === 4) {
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(88, 166, 255, 0.2)';
+        ctx.fill();
+      }
+      ctx.strokeStyle = '#58a6ff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    pts.forEach((p, i) => {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 6, 0, 2 * Math.PI);
+      ctx.fillStyle = i >= 2 ? '#f85149' : '#58a6ff';
+      ctx.fill();
+    });
+  }
+
+})();

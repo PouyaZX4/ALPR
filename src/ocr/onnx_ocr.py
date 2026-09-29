@@ -4,7 +4,9 @@ import json
 import numpy as np
 import onnxruntime as ort
 from dataclasses import dataclass
+
 from src.utils.plate_format import format_iranian_plate
+from src.utils.onnx_utils import get_onnx_providers
 
 
 @dataclass
@@ -14,13 +16,14 @@ class OCRResult:
     confidence: float
 
 
-PERSIAN_LETTERS = set("ابپتثجدسصطعقلمنوهیژآچشظغفکگ")
+PERSIAN_LETTERS = set("ابپتثجدسصطعقلمنوهیژآچشظغفکگD")
 
 
 def estimate_plate_confidence(plate_text: str) -> float:
+    """Fallback heuristic confidence scoring based on Iranian plate syntax."""
     if not plate_text:
         return 0.0
-    cleaned = plate_text.strip().replace(" ", "")
+    cleaned = plate_text.strip().replace(" ", "").replace("-", "")
     length = len(cleaned)
     if length in (7, 8, 9):
         has_letter = any(c in PERSIAN_LETTERS for c in cleaned)
@@ -41,6 +44,12 @@ class OnnxPlateOCR:
         onnx_path: str = "models/onnx/crnn_plate_ocr.onnx",
         vocab_path: str = "models/onnx/ocr_vocab.json"
     ):
+        if not os.path.exists(onnx_path):
+            raise FileNotFoundError(f"OCR model not found at path: {onnx_path}")
+        if not os.path.exists(vocab_path):
+            raise FileNotFoundError(f"OCR vocabulary not found at path: {vocab_path}")
+
+        providers = get_onnx_providers()
         sess_options = ort.SessionOptions()
         sess_options.log_severity_level = 3
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
@@ -48,7 +57,7 @@ class OnnxPlateOCR:
         self.session = ort.InferenceSession(
             onnx_path,
             sess_options=sess_options,
-            providers=['CPUExecutionProvider']
+            providers=providers
         )
         self.input_name = self.session.get_inputs()[0].name
 
@@ -61,6 +70,12 @@ class OnnxPlateOCR:
         self.mean = 0.6595
         self.std = 0.1501
 
+        # GPU / CPU Device Verification
+        active_providers = self.session.get_providers()
+        primary_device = active_providers[0] if active_providers else "Unknown"
+        device_badge = "🚀 [GPU ACTIVE]" if "CUDA" in primary_device or "Dml" in primary_device else "💻 [CPU FALLBACK]"
+        print(f"{device_badge} OCR Model '{os.path.basename(onnx_path)}' running on: {primary_device}")
+
     def read(self, plate_crop: np.ndarray) -> OCRResult:
         if plate_crop is None or plate_crop.size == 0:
             return OCRResult(plate_text="", formatted_text="UNKNOWN", confidence=0.0)
@@ -71,22 +86,24 @@ class OnnxPlateOCR:
         else:
             gray = plate_crop.copy()
 
-        # 2. Resize to exact (width=384, height=32)
+        # 2. Resize to CRNN input dimension (width=384, height=32)
         h, w = gray.shape[:2]
         interp = cv2.INTER_AREA if (w > self.target_width or h > self.target_height) else cv2.INTER_CUBIC
         resized = cv2.resize(gray, (self.target_width, self.target_height), interpolation=interp)
 
-        # 3. Horizontal Flip (Mirror=True preserves 100% CNN character recognition)
+        # 3. Horizontal Flip (CRNN model character alignment)
         mirrored = cv2.flip(resized, 1)
 
-        # 4. Normalize
+        # 4. Normalize to input distribution
         blob = (mirrored.astype(np.float32) / 255.0 - self.mean) / self.std
-        blob = blob[np.newaxis, np.newaxis, :, :]  # (1, 1, 32, 384)
+        blob = blob[np.newaxis, np.newaxis, :, :]  # Shape: (1, 1, 32, 384)
 
-        # 5. Run ONNX Inference -> Output: (96, 1, 45)
+        # 5. ONNX Inference
         outputs = self.session.run(None, {self.input_name: blob})[0]
+
+        # Standardize logits shape -> (TimeSteps, Classes)
         if outputs.ndim == 3 and outputs.shape[1] == 1:
-            logits = outputs[:, 0, :]  # (96, 45)
+            logits = outputs[:, 0, :]
         elif outputs.ndim == 3 and outputs.shape[0] == 1:
             logits = outputs[0]
         else:
@@ -115,10 +132,10 @@ class OnnxPlateOCR:
 
         raw_mirrored_text = "".join(char_list).strip()
 
-        # 8. Reverse the mirrored reading to obtain physical Left-to-Right plate
+        # 8. Reverse to physical Iranian plate reading order (Left-to-Right)
         true_plate = raw_mirrored_text[::-1]
 
-        # 9. Format into Iranian Plate components
+        # 9. Format Iranian plate structure
         parsed = format_iranian_plate(true_plate)
         formatted_plate = parsed["formatted"]
 

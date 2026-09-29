@@ -1,13 +1,16 @@
 paths:
-  database: data/violations.db
+  vehicle_detector: models/onnx/vehicle_detector.onnx
+  plate_detector: models/onnx/plate_detector.onnx
+  ocr_model: models/onnx/crnn_plate_ocr.onnx
+  ocr_vocab: models/onnx/ocr_vocab.json
   homography: data/calibration/homography.npy
-  ocr_model: models/ocr/crnn.onnx
-  ocr_vocab: models/ocr/vocab.json
-  plate_detector_weights: models/plate_detector/best.pt
-  vehicle_detector_weights: models/vehicle_detector/yolo11n.pt
+  calibration_points: data/calibration/calibration_points.json
+  database: data/violations.db
+
+thresholds:
+  speed_kmh: 60.0
+  vehicle_conf: 0.25
+  plate_conf: 0.20
+
 speed:
   smoothing_window: 8
-thresholds:
-  plate_conf: 0.5
-  speed_kmh: 70.0
-  vehicle_conf: 0.4
