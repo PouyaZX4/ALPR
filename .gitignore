@@ -15,3 +15,4 @@ data/training/*
 !data/training/.gitkeep
 models/*/*
 !models/*/.gitkeep
+datas/

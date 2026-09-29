@@ -7,11 +7,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
     <div class="app-container">
-        <!-- Sidebar / Navigation -->
+        <!-- Sidebar Navigation -->
         <aside class="sidebar">
             <div class="brand">
                 <div class="brand-icon">
@@ -26,45 +26,45 @@
             </div>
 
             <nav class="nav-menu">
-                <a href="#dashboard" class="nav-item active">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
-                    Dashboard
-                </a>
-                <a href="#upload" class="nav-item">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
-                    Video Upload
-                </a>
-                <a href="#violations" class="nav-item">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-                    Violations Log
-                </a>
+                <button class="nav-item active" data-tab="live-tab">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect><line x1="7" y1="2" x2="7" y2="22"></line><line x1="17" y1="2" x2="17" y2="22"></line><line x1="2" y1="12" x2="22" y2="12"></line><line x1="2" y1="7" x2="7" y2="7"></line><line x1="2" y1="17" x2="7" y2="17"></line><line x1="17" y1="17" x2="22" y2="17"></line><line x1="17" y1="7" x2="22" y2="7"></line></svg>
+                    Live Operations
+                </button>
+                <button class="nav-item" data-tab="calibration-tab">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"></polygon><line x1="8" y1="2" x2="8" y2="18"></line><line x1="16" y1="6" x2="16" y2="22"></line></svg>
+                    Road Calibration
+                </button>
+                <button class="nav-item" data-tab="history-tab">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                    Violations History
+                </button>
             </nav>
 
             <div class="system-status-card">
-                <div class="status-indicator online"></div>
+                <div class="status-indicator" id="wsStatusDot"></div>
                 <div class="status-details">
-                    <span class="status-title">System Status</span>
-                    <span class="status-value">Pipeline Ready</span>
+                    <span class="status-title">Live WebSocket</span>
+                    <span class="status-value" id="wsStatusText">Connecting...</span>
                 </div>
             </div>
         </aside>
 
-        <!-- Main Content -->
+        <!-- Main Workspace -->
         <main class="main-content">
             <header class="top-header">
                 <div class="header-title">
-                    <h1>Speed-Triggered ALPR System</h1>
-                    <p>Real-time vehicle detection, tracking, speed measurement, and plate recognition</p>
+                    <h1>Speed-Triggered ALPR Live Center</h1>
+                    <p>Real-time vehicle detection, perspective speed estimation, and Persian OCR recognition</p>
                 </div>
                 <div class="header-actions">
-                    <button class="btn btn-secondary" id="btnRefresh">
+                    <button class="btn btn-secondary" id="btnRefreshStats">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
-                        Refresh Data
+                        Refresh
                     </button>
                 </div>
             </header>
 
-            <!-- Metrics Cards Grid -->
+            <!-- Top Summary Metrics Grid -->
             <section class="metrics-grid">
                 <div class="metric-card glass">
                     <div class="metric-icon alert-icon">
@@ -95,88 +95,195 @@
                         <h3 class="metric-value" id="valAvgSpeed">0 <small>km/h</small></h3>
                     </div>
                 </div>
+
+                <div class="metric-card glass">
+                    <div class="metric-icon limit-icon">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line></svg>
+                    </div>
+                    <div class="metric-body">
+                        <span class="metric-label">Speed Limit</span>
+                        <h3 class="metric-value"><span id="valSpeedLimit">60</span> <small>km/h</small></h3>
+                    </div>
+                </div>
             </section>
 
-            <!-- Video Upload & Processing Section -->
-            <section class="panel-section glass" id="upload">
-                <div class="section-header">
-                    <h2>Video Analysis Control</h2>
-                    <span class="badge" id="thresholdBadge">Trigger: <span id="badgeThresholdVal">60</span> km/h</span>
-                </div>
-
-                <div class="threshold-control-card">
-                    <div class="threshold-header">
-                        <label for="thresholdRange">Enforcement Speed Threshold</label>
-                        <span class="threshold-value-display"><strong id="thresholdVal">60</strong> <small>km/h</small></span>
-                    </div>
-                    <div class="threshold-slider-wrapper">
-                        <span class="slider-limit">20 km/h</span>
-                        <input type="range" id="thresholdRange" min="20" max="160" step="5" value="60" class="slider-input">
-                        <span class="slider-limit">160 km/h</span>
-                    </div>
-                </div>
-                <div class="dropzone-container" id="dropzone">
-                    <input type="file" id="videoFileInput" accept="video/*" hidden>
-                    <div class="dropzone-content">
-                        <div class="upload-icon">
-                            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+            <!-- TAB 1: LIVE OPERATIONS & ANALYSIS -->
+            <div class="tab-pane active" id="live-tab">
+                <section class="panel-section glass">
+                    <div class="section-header">
+                        <div class="section-title-wrap">
+                            <h2>Live Visual Detection Feed</h2>
+                            <span class="badge" id="streamBadge">Stream Idle</span>
                         </div>
-                        <h3>Drag & drop video footage here</h3>
-                        <p>Supports MP4, AVI, MOV formats</p>
-                        <button class="btn btn-primary" id="btnSelectFile">Select Video File</button>
+                        <div class="stream-controls">
+                            <!-- Native overlay wrapper to ensure file dialog trigger -->
+                            <div class="upload-btn-wrapper" style="position: relative; display: inline-block;">
+                                <button class="btn btn-secondary" id="btnUploadTrigger" style="pointer-events: none;">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                                    <span id="uploadBtnText">Upload Video</span>
+                                </button>
+                                <input type="file" id="videoFileInput" accept="video/mp4,video/x-matroska,video/*" 
+                                       style="position: absolute; left: 0; top: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; z-index: 10;">
+                            </div>
+                            <button class="btn btn-primary" id="btnStartStream" disabled>
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                                Start Live Stream
+                            </button>
+                            <button class="btn btn-danger" id="btnStopStream" disabled>
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12"></rect></svg>
+                                Stop
+                            </button>
+                        </div>
                     </div>
-                    <div class="file-info hidden" id="fileInfo">
-                        <span id="fileName">video.mp4</span>
-                        <button class="btn btn-accent" id="btnUploadProcess">Upload & Process</button>
+
+                    <!-- Speed Limit Slider Control -->
+                    <div class="threshold-control-card">
+                        <div class="threshold-header">
+                            <label for="thresholdRange">Enforcement Speed Threshold</label>
+                            <span class="threshold-value-display"><strong id="thresholdVal">60</strong> <small>km/h</small></span>
+                        </div>
+                        <div class="threshold-slider-wrapper">
+                            <span class="slider-limit">20 km/h</span>
+                            <input type="range" id="thresholdRange" min="20" max="160" step="5" value="60" class="slider-input">
+                            <span class="slider-limit">160 km/h</span>
+                        </div>
                     </div>
-                </div>
-            </section>
 
-            <!-- Violations Table Section -->
-            <section class="panel-section glass" id="violations">
-                <div class="section-header">
-                    <h2>Recent Speed Violations</h2>
-                    <input type="text" class="search-input" id="tableFilter" placeholder="Filter by plate number...">
-                </div>
+                    <!-- Video Stream Container -->
+                    <div class="video-stream-wrapper" id="streamWrapper">
+                        <div class="stream-placeholder" id="streamPlaceholder">
+                            <div class="upload-icon">
+                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+                            </div>
+                            <h3>No Active Stream</h3>
+                            <p>Upload a video above and click <strong>Start Live Stream</strong> to begin real-time detection</p>
+                        </div>
+                        <img id="liveStreamImg" class="live-stream-img hidden" alt="Live Processing Stream">
+                    </div>
+                </section>
 
-                <div class="table-container">
-                    <table class="data-table">
-                        <thead>
-                            <tr>
-                                <th>ID</th>
-                                <th>Track ID</th>
-                                <th>Plate Text</th>
-                                <th>Speed (km/h)</th>
-                                <th>OCR Conf.</th>
-                                <th>Timestamp</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="violationsTableBody">
-                            <tr>
-                                <td colspan="7" class="empty-row">No violations recorded yet. Run video processing to populate logs.</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </section>
+                <!-- Real-Time Violations Feed -->
+                <section class="panel-section glass">
+                    <div class="section-header">
+                        <div class="section-title-wrap">
+                            <h2>🚨 Live Speeding Violations Feed</h2>
+                            <span class="badge badge-alert">Real-Time Trigger</span>
+                        </div>
+                        <span class="card-counter">Showing newest alerts</span>
+                    </div>
+
+                    <div class="violations-cards-grid" id="liveViolationsGrid">
+                        <div class="no-violations-msg" id="noViolationsMsg">
+                            <p>No speeding violations detected yet. When a vehicle exceeds the speed limit, its dual snapshot (car crop + license plate) and timestamp will appear here in real time.</p>
+                        </div>
+                    </div>
+                </section>
+            </div>
+
+            <!-- TAB 2: ROAD CALIBRATION & MARKER SETUP -->
+            <div class="tab-pane" id="calibration-tab">
+                <section class="panel-section glass">
+                    <div class="section-header">
+                        <div class="section-title-wrap">
+                            <h2>Interactive Road Geometry Calibration</h2>
+                            <p>Mark 4 reference spots on the road surface to compute perspective homography for exact speed measurement</p>
+                        </div>
+                    </div>
+
+                    <div class="calibration-workspace">
+                        <div class="canvas-container">
+                            <canvas id="calibrationCanvas"></canvas>
+                            <div class="canvas-hint" id="canvasHint">Upload a video to load reference road frame</div>
+                        </div>
+
+                        <div class="calibration-controls-card">
+                            <h3>1. Click 4 Reference Spots</h3>
+                            <p class="guide-text">Click in exact order: <strong>1. Top-Left &rarr; 2. Top-Right &rarr; 3. Bottom-Right &rarr; 4. Bottom-Left</strong></p>
+
+                            <div class="points-status-list">
+                                <div class="point-badge" id="ptBadge1">P1: Top-Left (Unset)</div>
+                                <div class="point-badge" id="ptBadge2">P2: Top-Right (Unset)</div>
+                                <div class="point-badge" id="ptBadge3">P3: Bottom-Right (Unset)</div>
+                                <div class="point-badge" id="ptBadge4">P4: Bottom-Left (Unset)</div>
+                            </div>
+
+                            <h3 style="margin-top: 20px;">2. Real-World Road Metrics</h3>
+                            <div class="form-group">
+                                <label for="roadWidthInput">Road / Lane Width (W in meters):</label>
+                                <input type="number" id="roadWidthInput" value="3.5" step="0.1" min="1.0" max="30.0" class="input-text">
+                                <small>e.g. 3.5m for single lane, 7.0m for two lanes</small>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="roadLengthInput">Road Segment Length (L in meters):</label>
+                                <input type="number" id="roadLengthInput" value="20.0" step="0.5" min="2.0" max="200.0" class="input-text">
+                                <small>Real physical distance between top and bottom road markers</small>
+                            </div>
+
+                            <div class="calib-btn-row">
+                                <button class="btn btn-secondary" id="btnResetPoints">Reset Spots</button>
+                                <button class="btn btn-primary" id="btnSaveCalibration">Save & Apply Calibration</button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+
+            <!-- TAB 3: VIOLATIONS HISTORY LOG -->
+            <div class="tab-pane" id="history-tab">
+                <section class="panel-section glass">
+                    <div class="section-header">
+                        <h2>Database Violation Records</h2>
+                        <input type="text" class="search-input" id="tableFilter" placeholder="Filter by plate number...">
+                    </div>
+
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Track ID</th>
+                                    <th>Plate Text</th>
+                                    <th>Speed (km/h)</th>
+                                    <th>Video Time</th>
+                                    <th>Confidence</th>
+                                    <th>System Time</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="violationsTableBody">
+                                <tr>
+                                    <td colspan="8" class="empty-row">No records stored in database yet.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
         </main>
     </div>
 
-    <!-- Image Modal -->
+    <!-- Modal for Detailed Inspection -->
     <div class="modal hidden" id="imageModal">
         <div class="modal-content glass">
             <span class="modal-close" id="modalClose">&times;</span>
-            <h3 id="modalTitle">Plate Details</h3>
+            <h3 id="modalTitle">Speeding Violation Inspection</h3>
             <div class="modal-body">
-                <div class="modal-img-wrapper">
-                    <img id="modalImage" src="" alt="Plate Crop">
+                <div class="modal-dual-crops">
+                    <div class="modal-crop-box">
+                        <label>Vehicle Snapshot</label>
+                        <img id="modalVehImage" src="" alt="Vehicle Crop">
+                    </div>
+                    <div class="modal-crop-box">
+                        <label>License Plate</label>
+                        <img id="modalPlateImage" src="" alt="Plate Crop">
+                    </div>
                 </div>
                 <div class="modal-info" id="modalInfo"></div>
             </div>
         </div>
     </div>
 
-    <script src="js/app.js"></script>
+    <script src="/static/js/app.js"></script>
 </body>
 </html>

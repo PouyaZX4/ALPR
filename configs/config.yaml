@@ -9,5 +9,5 @@ speed:
   smoothing_window: 8
 thresholds:
   plate_conf: 0.5
-  speed_kmh: 65.0
+  speed_kmh: 140.0
   vehicle_conf: 0.4

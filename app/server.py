@@ -10,11 +10,14 @@ import yaml
 import shutil
 import asyncio
 import numpy as np
-from typing import List, Dict, Any, Optional
-from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, HTTPException, Body
+from typing import List, Optional
+from tqdm import tqdm
+
+from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, HTTPException, Body, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
 
 from src.database.db import ViolationDB
 from src.pipeline.pipeline import SpeedALPRPipeline
@@ -39,9 +42,7 @@ os.makedirs(os.path.join(DATA_DIR, "raw_videos"), exist_ok=True)
 os.makedirs(os.path.join(DATA_DIR, "violations"), exist_ok=True)
 os.makedirs(os.path.join(DATA_DIR, "calibration"), exist_ok=True)
 
-# ----------------------------------------------------
-# WEBSOCKET CONNECTION MANAGER
-# ----------------------------------------------------
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
@@ -63,9 +64,7 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# ----------------------------------------------------
-# GLOBAL PIPELINE STATE
-# ----------------------------------------------------
+
 class LiveStreamState:
     def __init__(self):
         self.current_video_path: str = ""
@@ -77,6 +76,7 @@ class LiveStreamState:
         self.should_stop: bool = False
 
 stream_state = LiveStreamState()
+
 
 def get_config() -> dict:
     if os.path.exists(CONFIG_PATH):
@@ -92,6 +92,7 @@ def get_config() -> dict:
         "speed": {"smoothing_window": 8}
     }
 
+
 def get_or_init_pipeline(fps: float = 30.0) -> SpeedALPRPipeline:
     if stream_state.pipeline is None:
         config = get_config()
@@ -100,15 +101,17 @@ def get_or_init_pipeline(fps: float = 30.0) -> SpeedALPRPipeline:
         stream_state.pipeline.set_fps(fps)
     return stream_state.pipeline
 
-# Mount static and data directories
+
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 os.makedirs(static_dir, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 app.mount("/data", StaticFiles(directory=DATA_DIR), name="data")
 
-# ----------------------------------------------------
-# REST API ENDPOINTS
-# ----------------------------------------------------
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return Response(status_code=204)
+
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():
@@ -117,12 +120,12 @@ async def serve_index():
         return FileResponse(index_path)
     return HTMLResponse("<h2>ALPR Dashboard Static Asset Loading...</h2>")
 
+
 @app.websocket("/ws/live")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            # Keep-alive heartbeat & client messages
             data = await websocket.receive_text()
             if data == "ping":
                 await websocket.send_text("pong")
@@ -131,16 +134,29 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception:
         manager.disconnect(websocket)
 
-@app.post("/api/upload")
-async def upload_video(file: UploadFile = File(...)):
-    save_dir = os.path.join(DATA_DIR, "raw_videos")
-    file_path = os.path.join(save_dir, file.filename)
 
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+def _save_uploaded_file_with_tqdm(file: UploadFile, dest_path: str):
+    file.file.seek(0, 2)
+    total_size = file.file.tell()
+    file.file.seek(0)
 
-    # Extract reference frame for calibration preview
-    ref_frame = extract_reference_frame(file_path, 0)
+    print(f"\n[INFO] Receiving: {file.filename} ({total_size / (1024 * 1024):.1f} MB)")
+
+    chunk_size = 1024 * 1024
+    with tqdm(total=total_size, unit='B', unit_scale=True, unit_divisor=1024, desc=f"📥 Uploading {file.filename[:18]}") as pbar:
+        with open(dest_path, "wb") as buffer:
+            while True:
+                chunk = file.file.read(chunk_size)
+                if not chunk:
+                    break
+                buffer.write(chunk)
+                pbar.update(len(chunk))
+
+
+def _probe_video_sync(file_path: str):
+    ref_frame = extract_reference_frame(file_path, 25)
+    if ref_frame is None:
+        ref_frame = extract_reference_frame(file_path, 0)
     if ref_frame is not None:
         cv2.imwrite(REF_FRAME_PATH, ref_frame)
 
@@ -151,6 +167,19 @@ async def upload_video(file: UploadFile = File(...)):
 
     if fps <= 0 or np.isnan(fps):
         fps = 30.0
+    return fps, total_frames
+
+
+@app.post("/api/upload")
+async def upload_video(file: UploadFile = File(...)):
+    save_dir = os.path.join(DATA_DIR, "raw_videos")
+    os.makedirs(save_dir, exist_ok=True)
+    file_path = os.path.join(save_dir, file.filename)
+
+    await run_in_threadpool(_save_uploaded_file_with_tqdm, file, file_path)
+
+    print("[INFO] Probing video and extracting reference frame...")
+    fps, total_frames = await run_in_threadpool(_probe_video_sync, file_path)
 
     stream_state.current_video_path = file_path
     stream_state.fps = fps
@@ -158,8 +187,9 @@ async def upload_video(file: UploadFile = File(...)):
     stream_state.current_frame = 0
     stream_state.should_stop = False
 
-    # Initialize/update pipeline with new video FPS
-    get_or_init_pipeline(fps)
+    print("[INFO] Pre-warming models for this stream...")
+    await run_in_threadpool(get_or_init_pipeline, fps)
+    print("🚀 [READY] Video loaded successfully!\n")
 
     return {
         "status": "success",
@@ -169,14 +199,58 @@ async def upload_video(file: UploadFile = File(...)):
         "reference_frame_url": "/data/calibration/reference_frame.jpg"
     }
 
+
+def _process_stream_frame(pipeline, frame, frame_idx, speed_limit, total_frames, fps):
+    h_f, w_f = frame.shape[:2]
+    tracks, speed_records, new_violations = pipeline.process_frame(frame, frame_idx)
+    speed_map = {rec.track_id: rec.speed_kmh for rec in speed_records}
+
+    # Virtual Enforcement Gate
+    gate_y = int(h_f * pipeline.capture_line_ratio)
+    cv2.line(frame, (0, gate_y), (w_f, gate_y), (255, 105, 180), 2)
+    cv2.putText(frame, "ENFORCEMENT GATE", (15, gate_y - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 105, 180), 2)
+
+    for trk in tracks:
+        x1, y1, x2, y2 = map(int, trk.bbox)
+        tid = trk.track_id
+        speed = speed_map.get(tid, 0.0)
+
+        is_speeding = speed > speed_limit
+        color = (0, 0, 255) if is_speeding else (0, 230, 118)
+
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        label = f"ID:{tid} | {speed:.1f} km/h"
+        (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+        cv2.rectangle(frame, (x1, y1 - 22), (x1 + text_w, y1), color, -1)
+        cv2.putText(frame, label, (x1, y1 - 6),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2)
+
+    s = frame_idx / fps
+    m = int(s // 60)
+    sec = s % 60
+    time_str = f"{m:02d}:{sec:05.2f}"
+    header_text = f"LIMIT: {speed_limit:.0f} km/h | {time_str} | F:{frame_idx}/{total_frames}"
+    cv2.rectangle(frame, (10, 10), (520, 38), (0, 0, 0), -1)
+    cv2.putText(frame, header_text, (18, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 229, 255), 2)
+
+    if w_f > 1280:
+        scale = 1280.0 / w_f
+        stream_frame = cv2.resize(frame, (1280, int(h_f * scale)), interpolation=cv2.INTER_LINEAR)
+    else:
+        stream_frame = frame
+
+    _, buffer = cv2.imencode('.jpg', stream_frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+    return buffer.tobytes(), new_violations
+
+
 @app.get("/api/stream/video")
 async def stream_video():
-    """Streams the live annotated video with bounding boxes, speeds, and timestamps."""
     if not stream_state.current_video_path or not os.path.exists(stream_state.current_video_path):
         raise HTTPException(status_code=400, detail="No video loaded. Upload a video first.")
 
     pipeline = get_or_init_pipeline(stream_state.fps)
-    
+
     async def frame_generator():
         cap = cv2.VideoCapture(stream_state.current_video_path)
         frame_idx = 0
@@ -195,11 +269,16 @@ async def stream_video():
                 frame_idx += 1
                 stream_state.current_frame = frame_idx
 
-                # 1. Process Frame through Pipeline
-                tracks, speed_records, new_violations = pipeline.process_frame(frame, frame_idx)
-                speed_map = {rec.track_id: rec.speed_kmh for rec in speed_records}
+                frame_bytes, new_violations = await run_in_threadpool(
+                    _process_stream_frame,
+                    pipeline,
+                    frame,
+                    frame_idx,
+                    speed_limit,
+                    stream_state.total_frames,
+                    stream_state.fps
+                )
 
-                # 2. Broadcast new violations immediately via WebSocket
                 for v in new_violations:
                     payload = {
                         "type": "NEW_VIOLATION",
@@ -218,39 +297,10 @@ async def stream_video():
                     }
                     asyncio.create_task(manager.broadcast(payload))
 
-                # 3. Draw On-Screen Overlays (Boxes, Speeds, Timestamp)
-                for trk in tracks:
-                    x1, y1, x2, y2 = map(int, trk.bbox)
-                    tid = trk.track_id
-                    speed = speed_map.get(tid, 0.0)
-
-                    is_speeding = speed > speed_limit
-                    color = (0, 0, 255) if is_speeding else (0, 230, 118)  # Red if speeding, Green if normal
-
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                    label = f"ID:{tid} | {speed:.1f} km/h"
-                    
-                    # Background text banner
-                    (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
-                    cv2.rectangle(frame, (x1, y1 - 22), (x1 + text_w, y1), color, -1)
-                    cv2.putText(frame, label, (x1, y1 - 6),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2)
-
-                # 4. Draw Header Status Banner
-                video_time_str = format_time_simple(frame_idx, stream_state.fps)
-                header_text = f"SPEED LIMIT: {speed_limit:.0f} km/h | TIME: {video_time_str} | FRAME: {frame_idx}/{stream_state.total_frames}"
-                cv2.rectangle(frame, (10, 10), (550, 42), (0, 0, 0), -1)
-                cv2.putText(frame, header_text, (20, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 229, 255), 2)
-
-                # 5. Encode JPEG
-                _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-                frame_bytes = buffer.tobytes()
-
                 yield (b'--frame\r\n'
                        b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
-                # Yield control to event loop for 30 FPS timing
-                await asyncio.sleep(0.001)
+                await asyncio.sleep(0.005)
 
         finally:
             cap.release()
@@ -259,44 +309,27 @@ async def stream_video():
     return StreamingResponse(frame_generator(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 
-def format_time_simple(frame_idx: int, fps: float) -> str:
-    fps = fps if fps > 0 else 30.0
-    s = frame_idx / fps
-    m = int(s // 60)
-    sec = s % 60
-    return f"{m:02d}:{sec:05.2f}"
-
-
 @app.post("/api/stream/stop")
 async def stop_stream():
     stream_state.should_stop = True
     return {"status": "success", "message": "Stream stop requested."}
 
 
-# ----------------------------------------------------
-# CALIBRATION ENDPOINTS
-# ----------------------------------------------------
-
 @app.get("/api/calibration/reference-frame")
 async def get_reference_frame():
     if os.path.exists(REF_FRAME_PATH):
         return FileResponse(REF_FRAME_PATH)
-    raise HTTPException(status_code=404, detail="No reference frame available. Upload a video first.")
+    return Response(status_code=204)
 
 
 @app.post("/api/calibration/save")
 async def save_calibration(payload: dict = Body(...)):
-    """
-    Accepts 4 pixel points [[x1, y1], [x2, y2], [x3, y3], [x4, y4]]
-    and real-world dimensions (road_width_m, road_length_m).
-    Computes homography and updates active pipeline in real time.
-    """
     pixel_points = payload.get("pixel_points", [])
     road_width_m = float(payload.get("road_width_m", 3.5))
     road_length_m = float(payload.get("road_length_m", 20.0))
 
     if len(pixel_points) != 4:
-        raise HTTPException(status_code=400, detail="Exactly 4 reference points (Top-Left, Top-Right, Bottom-Right, Bottom-Left) are required.")
+        raise HTTPException(status_code=400, detail="Exactly 4 reference points are required.")
 
     world_points = [
         (0.0, 0.0),
@@ -309,7 +342,6 @@ async def save_calibration(payload: dict = Body(...)):
         H = compute_homography(pixel_points, world_points)
         save_homography(H, CALIBRATION_PATH)
 
-        # Update active pipeline instance immediately
         if stream_state.pipeline is not None:
             stream_state.pipeline.set_homography(H)
 
@@ -331,10 +363,6 @@ async def get_current_calibration():
         "homography": H.tolist()
     }
 
-
-# ----------------------------------------------------
-# STATS & VIOLATIONS ENDPOINTS
-# ----------------------------------------------------
 
 @app.get("/api/violations")
 async def get_violations(limit: int = 50):
